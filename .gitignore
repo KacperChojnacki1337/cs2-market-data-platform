@@ -20,6 +20,7 @@ venv/
 secrets/
 .aws/
 .gcp/
+*.zip
 
 # Inne
 .DS_Store
