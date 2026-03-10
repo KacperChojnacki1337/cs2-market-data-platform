@@ -125,7 +125,8 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Action = "ssm:GetParameter"
         Effect = "Allow"
-        Resource = "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/gcp-key"
+        Resource =[ "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/gcp-key",
+                    "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/*"]
       },
       {
         Action = [
@@ -179,8 +180,43 @@ resource "aws_lambda_function" "steam_producer" {
       GCP_PROJECT_ID = "steam-tracker-portfolio"
       BQ_DATASET     = google_bigquery_dataset.raw_dataset.dataset_id # Points to steam_raw
       GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
+      RP_BOOTSTRAP_PARAM  = aws_ssm_parameter.redpanda_bootstrap.name
+      RP_USER_PARAM       = aws_ssm_parameter.redpanda_user.name
+      RP_PASS_PARAM       = aws_ssm_parameter.redpanda_pass.name
     }
   }
 
   source_code_hash = data.archive_file.lambda_code_zip.output_base64sha256
 }
+
+# --- Redpanda Connection Details in SSM ---
+
+resource "aws_ssm_parameter" "redpanda_bootstrap" {
+  name  = "/steam-tracker/redpanda-bootstrap"
+  type  = "SecureString"
+  value = "d6o1vn7jkk1fce8gpuq0.any.eu-central-1.mpx.prd.cloud.redpanda.com:9092" 
+}
+
+resource "aws_ssm_parameter" "redpanda_user" {
+  name  = "/steam-tracker/redpanda-user"
+  type  = "SecureString"
+  value = "lambda-producer"
+}
+
+resource "aws_ssm_parameter" "redpanda_pass" {
+  name  = "/steam-tracker/redpanda-pass"
+  type  = "SecureString"
+  value = var.redpanda_password
+}
+
+
+
+
+
+
+
+
+
+
+
+

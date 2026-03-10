@@ -19,3 +19,9 @@ variable "gcp_credentials_file" {
   description = "Path to the JSON file with the service account key"
   type        = string
 }
+
+variable "redpanda_password" {
+  description = "Password for Redpanda lambda-producer user"
+  type        = string
+  sensitive   = true
+}
