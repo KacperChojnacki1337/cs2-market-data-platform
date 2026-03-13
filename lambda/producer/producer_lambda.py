@@ -4,117 +4,112 @@ import requests
 import os
 import hashlib
 from datetime import datetime
-from google.cloud import bigquery
-from google.oauth2 import service_account
+from confluent_kafka import Producer
 
-# --- Configuration from Environment Variables (managed by Terraform) ---
+# --- Configuration from Environment Variables ---
 DYNAMODB_TABLE = os.environ.get('DYNAMODB_TABLE')
-GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
-BQ_DATASET = os.environ.get('BQ_DATASET')  # Now points to 'steam_raw'
-GCP_KEY_PARAM = os.environ.get('GCP_KEY_PARAM')
+GCP_KEY_PARAM = os.environ.get('GCP_KEY_PARAM') 
+RP_BOOTSTRAP_PARAM = os.environ.get('RP_BOOTSTRAP_PARAM')
+RP_USER_PARAM = os.environ.get('RP_USER_PARAM')
+RP_PASS_PARAM = os.environ.get('RP_PASS_PARAM')
 
 # Initialize AWS Clients
 ssm = boto3.client('ssm')
 dynamodb = boto3.resource('dynamodb')
 inventory_table = dynamodb.Table(DYNAMODB_TABLE)
 
-def get_gcp_credentials():
-    """Retrieves GCP Service Account JSON from AWS SSM Parameter Store."""
-    parameter = ssm.get_parameter(Name=GCP_KEY_PARAM, WithDecryption=True)
-    credentials_json = json.loads(parameter['Parameter']['Value'])
-    return service_account.Credentials.from_service_account_info(credentials_json)
+def get_ssm_param(param_name):
+    """Retrieves secure parameters from AWS SSM."""
+    parameter = ssm.get_parameter(Name=param_name, WithDecryption=True)
+    return parameter['Parameter']['Value']
 
-def generate_asset_id(item_id, buy_date):
-    """Generates a unique surrogate key (hash) for each purchase."""
-    unique_str = f"{item_id}_{buy_date}"
-    return hashlib.md5(unique_str.encode()).hexdigest()
+def get_redpanda_producer():
+    """Configures Kafka Producer for Redpanda Serverless."""
+    conf = {
+        'bootstrap.servers': get_ssm_param(RP_BOOTSTRAP_PARAM),
+        'security.protocol': 'SASL_SSL',
+        'sasl.mechanism': 'SCRAM-SHA-256',
+        'sasl.username': get_ssm_param(RP_USER_PARAM),
+        'sasl.password': get_ssm_param(RP_PASS_PARAM),
+        'client.id': 'steam-producer-lambda'
+    }
+    return Producer(conf)
 
 def get_steam_price(market_hash_name):
     """Fetches the latest lowest price from Steam Market API."""
     encoded_name = requests.utils.quote(market_hash_name)
     url = f"https://steamcommunity.com/market/priceoverview/?appid=730&currency=1&market_hash_name={encoded_name}"
-    
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if data.get("success") and "lowest_price" in data:
-                # Convert "$1.50" or "$1,200.00" to float 1.50
                 price_str = data["lowest_price"].replace("$", "").replace(",", "")
                 return float(price_str)
-        else:
-            print(f"⚠️ Steam API returned status {response.status_code} for {market_hash_name}")
     except Exception as e:
         print(f"❌ Error fetching price for {market_hash_name}: {e}")
     return None
 
 def lambda_handler(event, context):
-    # 1. Extract: Get items from DynamoDB (Portfolio Source)
-    print(f"🔍 Scanning DynamoDB table: {DYNAMODB_TABLE}")
+    print(f"🔍 Scanning DynamoDB: {DYNAMODB_TABLE}")
     items = inventory_table.scan().get('Items', [])
     
     if not items:
-        print("ℹ️ No items found in DynamoDB.")
-        return {'statusCode': 200, 'body': 'No items to process.'}
+        return {'statusCode': 200, 'body': 'No items found.'}
 
-    # 2. Setup BigQuery Client
-    credentials = get_gcp_credentials()
-    client = bigquery.Client(credentials=credentials, project=GCP_PROJECT_ID)
-    
-    # Updated Table IDs to match the new Bronze Layer (steam_raw) structure
-    assets_raw_table = f"{GCP_PROJECT_ID}.{BQ_DATASET}.assets_history"
-    prices_raw_table = f"{GCP_PROJECT_ID}.{BQ_DATASET}.prices_history"
-
-    assets_rows = []
-    prices_rows = []
+    producer = get_redpanda_producer()
     current_ts = datetime.utcnow().isoformat()
+    inventory_count = 0
+    price_count = 0
 
-    # 3. Transform: Prepare data for Bronze Layer ingestion
     for item in items:
         item_id = item['item_id']
-        buy_date = item['buy_date']
-        asset_id = generate_asset_id(item_id, buy_date)
         
-        print(f"📦 Processing: {item_id} (Asset ID: {asset_id})")
-        
-        # Mapping for assets_history table
-        assets_rows.append({
-            "asset_id": asset_id,
+        # 1. Send Inventory Data to 'db-inventory-events'
+        inventory_payload = {
             "item_id": item_id,
-            "buy_date": buy_date,
+            "buy_date": item.get('buy_date'),
             "buy_price": float(item.get('buy_price', 0)),
             "buy_currency": item.get('buy_currency', 'PLN'),
             "quantity": int(item.get('quantity', 1)),
             "category": item.get('category', 'Skin'),
-            "purchase_channel": item.get('purchase_channel', 'Unknown'),
-            "last_updated": current_ts
-        })
+            "timestamp": current_ts
+        }
+        producer.produce(
+            'db-inventory-events', 
+            key=item_id, 
+            value=json.dumps(inventory_payload)
+        )
+        inventory_count += 1
 
-        # Mapping for prices_history table
+        # 2. Fetch and Send Price Data to 'market-price-events'
         market_price = get_steam_price(item_id)
         if market_price is not None:
-            prices_rows.append({
+            price_payload = {
                 "item_id": item_id,
                 "price_usd": market_price,
                 "timestamp": current_ts
-            })
+            }
+            producer.produce(
+                'market-price-events', 
+                key=item_id, 
+                value=json.dumps(price_payload)
+            )
+            price_count += 1
         else:
-            print(f"⚠️ Skipping price fact for {item_id} due to API error.")
+            print(f"⚠️ Could not fetch price for {item_id}, skipping price event.")
 
-    # 4. Load: Stream data into BigQuery Bronze Layer
-    report = {}
-
-    if assets_rows:
-        errors = client.insert_rows_json(assets_raw_table, assets_rows)
-        report['assets_ingestion'] = "✅ Success" if not errors else f"❌ Errors: {errors}"
-
-    if prices_rows:
-        errors = client.insert_rows_json(prices_raw_table, prices_rows)
-        report['prices_ingestion'] = "✅ Success" if not errors else f"❌ Errors: {errors}"
-
-    print(f"📊 Summary: {json.dumps(report)}")
-
+    # Ensure all messages are delivered before Lambda finishes
+    producer.flush() 
+    
+    summary = {
+        "status": "success", 
+        "inventory_events_sent": inventory_count,
+        "price_events_sent": price_count
+    }
+    print(f"📊 Summary: {summary}")
+    
     return {
         'statusCode': 200,
-        'body': json.dumps(report)
+        'body': json.dumps(summary)
     }
