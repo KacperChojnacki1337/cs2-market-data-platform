@@ -91,6 +91,22 @@ EOF
 # 3. IAM: Security and Permissions
 # ==========================================
 
+# Policy allowing the Consumer Role to read the Redpanda credentials from Secrets Manager
+resource "aws_iam_role_policy" "consumer_secrets_policy" {
+  name = "consumer_secrets_policy"
+  role = aws_iam_role.consumer_exec_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action   = "secretsmanager:GetSecretValue"
+      Effect   = "Allow"
+      Resource = aws_secretsmanager_secret.redpanda_creds.arn
+    }]
+  })
+}
+# ----------------------
+
 resource "aws_iam_role" "lambda_exec_role" {
   name = "steam_tracker_lambda_role"
 
@@ -140,6 +156,94 @@ resource "aws_iam_role_policy" "lambda_policy" {
     ]
   })
 }
+
+# --- IAM Role for Consumer (needs SSM and BigQuery access) ---
+resource "aws_secretsmanager_secret" "redpanda_creds" {
+  name = "steam-tracker/redpanda-creds-v2" 
+}
+
+resource "aws_secretsmanager_secret_version" "redpanda_creds_val" {
+  secret_id     = aws_secretsmanager_secret.redpanda_creds.id
+  secret_string = jsonencode({
+    username = "lambda-producer"
+    password = var.redpanda_password
+  })
+}
+
+resource "aws_iam_role" "consumer_exec_role" {
+  name = "steam_tracker_consumer_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+
+# Basic Lambda Execution Policy + SSM Access
+resource "aws_iam_role_policy_attachment" "consumer_basic" {
+  role       = aws_iam_role.consumer_exec_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "consumer_ssm_policy" {
+  name = "consumer_ssm_policy"
+  role = aws_iam_role.consumer_exec_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action   = "ssm:GetParameter"
+      Effect   = "Allow"
+      Resource = "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/*"
+    }]
+  })
+}
+
+# --- THE BRIDGE: Redpanda (MSK/Kafka) Event Source Mapping ---
+# Note: AWS Lambda needs these secrets to authenticate with Redpanda
+# Trigger for Inventory Events
+resource "aws_lambda_event_source_mapping" "redpanda_inventory_trigger" {
+  function_name     = aws_lambda_function.steam_consumer.arn
+  topics            = ["db-inventory-events"]
+  starting_position = "LATEST"
+  
+  self_managed_event_source {
+    endpoints = {
+      KAFKA_BOOTSTRAP_SERVERS = "d6o1vn7jkk1fce8gpuq0.any.eu-central-1.mpx.prd.cloud.redpanda.com:9092"
+    }
+  }
+
+  source_access_configuration {
+    type  = "SASL_SCRAM_256_AUTH"
+    uri   = aws_secretsmanager_secret.redpanda_creds.arn
+  }
+}
+
+
+
+# Trigger for Market Price Events
+resource "aws_lambda_event_source_mapping" "redpanda_prices_trigger" {
+  function_name     = aws_lambda_function.steam_consumer.arn
+  topics            = ["market-price-events"]
+  starting_position = "LATEST"
+  
+  self_managed_event_source {
+    endpoints = {
+      KAFKA_BOOTSTRAP_SERVERS = "d6o1vn7jkk1fce8gpuq0.any.eu-central-1.mpx.prd.cloud.redpanda.com:9092"
+    }
+  }
+
+  source_access_configuration {
+    type  = "SASL_SCRAM_256_AUTH"
+    uri   = aws_secretsmanager_secret.redpanda_creds.arn
+  }
+}
+
+
 
 # ==========================================
 # 4. Lambda: Packaging and Deployment
@@ -210,7 +314,37 @@ resource "aws_ssm_parameter" "redpanda_pass" {
 }
 
 
+# ==========================================
+# 5. Consumer Lambda: From Redpanda to BigQuery
+# ==========================================
 
+# ZIP the consumer code
+data "archive_file" "consumer_zip" {
+  type        = "zip"
+  source_file = "../lambda/consumer/consumer_lambda.py"
+  output_path = "consumer_lambda.zip"
+}
+
+# Lambda Function: Consumer
+resource "aws_lambda_function" "steam_consumer" {
+  filename      = data.archive_file.consumer_zip.output_path
+  function_name = "steam_bq_consumer"
+  role          = aws_iam_role.consumer_exec_role.arn
+  handler       = "consumer_lambda.lambda_handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  layers = [aws_lambda_layer_version.python_libs.arn]
+
+  environment {
+    variables = {
+      GCP_PROJECT_ID = "steam-tracker-portfolio"
+      BQ_DATASET     = google_bigquery_dataset.raw_dataset.dataset_id
+      GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
+    }
+  }
+}
 
 
 
