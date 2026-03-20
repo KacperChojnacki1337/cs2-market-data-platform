@@ -2,9 +2,9 @@ import boto3
 import json
 import requests
 import os
-import hashlib
 from datetime import datetime
 from confluent_kafka import Producer
+import time
 
 # --- Configuration from Environment Variables ---
 DYNAMODB_TABLE = os.environ.get('DYNAMODB_TABLE')
@@ -18,36 +18,43 @@ ssm = boto3.client('ssm')
 dynamodb = boto3.resource('dynamodb')
 inventory_table = dynamodb.Table(DYNAMODB_TABLE)
 
-def get_ssm_param(param_name):
-    """Retrieves secure parameters from AWS SSM."""
-    parameter = ssm.get_parameter(Name=param_name, WithDecryption=True)
-    return parameter['Parameter']['Value']
+def _load_redpanda_config():
+    response = ssm.get_parameters(
+        Names=[RP_BOOTSTRAP_PARAM, RP_USER_PARAM, RP_PASS_PARAM],
+        WithDecryption=True
+    )
+    params = {p['Name']: p['Value'] for p in response['Parameters']}
+    return {
+        'bootstrap.servers': params[RP_BOOTSTRAP_PARAM],
+        'security.protocol': 'SASL_SSL',
+        'sasl.mechanism': 'SCRAM-SHA-256',
+        'sasl.username': params[RP_USER_PARAM],
+        'sasl.password': params[RP_PASS_PARAM],
+        'client.id': 'steam-producer-lambda'
+    }
+
+_REDPANDA_CONF = _load_redpanda_config()
 
 def get_redpanda_producer():
     """Configures Kafka Producer for Redpanda Serverless."""
-    conf = {
-        'bootstrap.servers': get_ssm_param(RP_BOOTSTRAP_PARAM),
-        'security.protocol': 'SASL_SSL',
-        'sasl.mechanism': 'SCRAM-SHA-256',
-        'sasl.username': get_ssm_param(RP_USER_PARAM),
-        'sasl.password': get_ssm_param(RP_PASS_PARAM),
-        'client.id': 'steam-producer-lambda'
-    }
-    return Producer(conf)
+    return Producer(_REDPANDA_CONF)
 
-def get_steam_price(market_hash_name):
-    """Fetches the latest lowest price from Steam Market API."""
+def get_steam_price(market_hash_name, retries=3, backoff=2):
     encoded_name = requests.utils.quote(market_hash_name)
     url = f"https://steamcommunity.com/market/priceoverview/?appid=730&currency=1&market_hash_name={encoded_name}"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("success") and "lowest_price" in data:
-                price_str = data["lowest_price"].replace("$", "").replace(",", "")
-                return float(price_str)
-    except Exception as e:
-        print(f"❌ Error fetching price for {market_hash_name}: {e}")
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success") and "lowest_price" in data:
+                    price_str = data["lowest_price"].replace("$", "").replace(",", "")
+                    return float(price_str)
+        except Exception as e:
+            print(f"⚠️ Attempt {attempt + 1}/{retries} failed for {market_hash_name}: {e}")
+            if attempt < retries - 1:
+                time.sleep(backoff ** attempt)  # 1s, 2s, 4s
+    print(f"❌ All {retries} attempts failed for {market_hash_name}, skipping.")
     return None
 
 def lambda_handler(event, context):
@@ -67,6 +74,7 @@ def lambda_handler(event, context):
         
         # 1. Send Inventory Data to 'db-inventory-events'
         inventory_payload = {
+            "asset_id": item.get('asset_id'),
             "item_id": item_id,
             "buy_date": item.get('buy_date'),
             "buy_price": float(item.get('buy_price', 0)),
