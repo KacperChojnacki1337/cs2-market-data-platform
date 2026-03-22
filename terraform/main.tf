@@ -45,21 +45,21 @@ resource "google_bigquery_dataset" "marts_dataset" {
 
 # --- RAW TABLE: Assets Ingestion (Bronze) ---
 resource "google_bigquery_table" "raw_assets" {
-  dataset_id = google_bigquery_dataset.raw_dataset.dataset_id
-  table_id   = "assets_history"
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "assets_history"
   deletion_protection = false
 
   schema = <<EOF
 [
-  {"name": "asset_id", "type": "STRING", "mode": "REQUIRED", "description": "Surrogate Key"},
-  {"name": "item_id", "type": "STRING", "mode": "REQUIRED", "description": "Natural Key"},
-  {"name": "buy_date", "type": "STRING", "mode": "NULLABLE"},
-  {"name": "buy_price", "type": "FLOAT", "mode": "NULLABLE"},
-  {"name": "buy_currency", "type": "STRING", "mode": "NULLABLE"},
-  {"name": "quantity", "type": "INTEGER", "mode": "NULLABLE"},
-  {"name": "category", "type": "STRING", "mode": "NULLABLE"},
-  {"name": "purchase_channel", "type": "STRING", "mode": "NULLABLE"},
-  {"name": "last_updated", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  {"name": "asset_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",           "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "buy_date",          "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "buy_price",         "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "buy_currency",      "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",          "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "category",          "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "purchase_channel",  "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "last_updated",      "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }
@@ -69,11 +69,6 @@ resource "google_bigquery_table" "raw_prices" {
   dataset_id = google_bigquery_dataset.raw_dataset.dataset_id
   table_id   = "prices_history"
   deletion_protection = false
-
-  time_partitioning {
-    type  = "DAY"
-    field = "timestamp" 
-  }
 
   schema = <<EOF
 [
@@ -136,10 +131,15 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Resource = aws_dynamodb_table.inventory_metadata.arn
       },
       {
-        Action = "ssm:GetParameter"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"    # ← dodane, batch fetch wymaga tej akcji
+        ]
         Effect = "Allow"
-        Resource =[ "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/gcp-key",
-                    "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/*"]
+        Resource = [
+          "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/gcp-key",
+          "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/*"
+        ]
       },
       {
         Action = [
