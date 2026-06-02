@@ -4,97 +4,99 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**CS2 Skin Portfolio Tracker** is a production-grade data engineering pipeline that tracks Counter-Strike 2 skin inventory, fetches real-time market prices from Steam, and calculates portfolio value with unrealized PnL in both USD and PLN. It demonstrates a modern, event-driven data architecture spanning AWS (DynamoDB, Lambda), Redpanda (event streaming), and GCP BigQuery (data warehouse).
+**CS2 Skin Portfolio Tracker** is a production-grade data engineering pipeline that tracks Counter-Strike 2 skin inventory, fetches real-time market prices from Steam, and calculates portfolio value with both unrealized and realized PnL in USD and PLN. It demonstrates a modern data architecture spanning AWS (DynamoDB, Lambda) and GCP (BigQuery, Looker Studio) with dbt transformations.
 
 Core flow:
-- Track CS2 skin inventory stored in AWS DynamoDB
+- Track CS2 skin inventory (buy and sell events) stored in AWS DynamoDB
 - Fetch live prices from Steam Market API and USD/PLN exchange rates from Poland's National Bank (NBP)
-- Stream events through Redpanda Serverless (Kafka-compatible)
-- Load data into BigQuery and transform via dbt
-- Calculate portfolio metrics: current value, unrealized PnL, PnL percentage
+- Producer Lambda writes directly to BigQuery (no message broker)
+- Transform via dbt with full medallion architecture (bronze/silver/gold)
+- Calculate portfolio metrics: current value, unrealized PnL, realized PnL, PnL percentage
+- Visualize in Looker Studio
 
 ## Architecture Overview
 
 ```
-DynamoDB (source of truth)
+DynamoDB (source of truth — OLTP)
     ↓
 Producer Lambda (daily 07:00 UTC via EventBridge)
-    ├─ Scans inventory
-    ├─ Fetches Steam prices
+    ├─ Scans inventory (buy + sell events)
+    ├─ Fetches Steam prices (with data quality validation)
     ├─ Fetches NBP exchange rates
-    └─ Publishes 3 Redpanda topics
-         ├─ db-inventory-events
-         ├─ market-price-events
-         └─ exchange-rate-events
-    ↓
-Redpanda Serverless
-    ↓
-Consumer Lambda (triggered per topic)
-    └─ Routes events to BigQuery by topic
+    └─ Writes directly to BigQuery steam_raw
+         ├─ assets_history
+         ├─ sales_history
+         ├─ prices_history
+         └─ exchange_rates
     ↓
 BigQuery (medallion architecture)
-    ├─ steam_raw (bronze layer)
-    │  ├─ assets_history
-    │  ├─ prices_history
-    │  └─ exchange_rates
-    └─ steam_marts (gold layer)
-       ├─ stg_assets, stg_prices, stg_exchange_rates (staging views)
-       ├─ int_latest_prices, int_latest_exchange_rate (intermediate views)
-       ├─ dim_assets (dimension table - deduplicated with surrogate key)
-       └─ fct_portfolio (fact table - PnL calculations)
+    ├─ steam_raw        (bronze — raw inserts from Lambda)
+    ├─ steam_staging    (silver — type casts, views via dbt)
+    └─ steam_marts      (gold — business tables via dbt)
     ↑
 dbt Pipeline (daily 08:00 UTC via GitHub Actions, + manual pushes to dbt/**)
+    └─ Pre-run data freshness check (abort if today's data missing)
+    ↓
+Looker Studio (dashboard over steam_marts)
 ```
 
 ### Key Design Decisions
 
 | Component | Choice | Why |
 |-----------|--------|-----|
-| Source of Truth | DynamoDB | Schemaless, serverless, PITR enabled for audit safety |
-| Event Broker | Redpanda Serverless | Kafka-compatible, zero ops, decouples ingestion from storage |
-| Compute | AWS Lambda | Event-driven, zero idle cost: producer (scheduled) + consumer (event-triggered) |
-| Data Warehouse | BigQuery (EU region) | Serverless, columnar, native dbt, GDPR-compliant location |
-| Transformations | dbt | Version-controlled SQL, lineage, automated testing, surrogate keys in marts |
-| IaC | Terraform | Complete infrastructure definition — DynamoDB, Lambda, IAM, BigQuery datasets |
+| Source of Truth | DynamoDB | Schemaless, serverless, PITR enabled — OLTP layer |
+| Compute | AWS Lambda | Event-driven, zero idle cost, single producer writes directly to BQ |
+| Data Warehouse | BigQuery (EU region) | Serverless, columnar, native dbt, GDPR-compliant |
+| Transformations | dbt | Version-controlled SQL, lineage, automated testing, surrogate keys |
+| Medallion | 3 BQ datasets | bronze/silver/gold aligned with dbt layers (staging/intermediate/marts) |
+| IaC | Terraform | Complete infra — DynamoDB, Lambda, IAM, BigQuery datasets + budget alerts |
 | CI/CD | GitHub Actions | dbt runs on push to main (if `dbt/**` changed) + daily 08:00 UTC schedule |
-| Secrets | AWS SSM Parameter Store | Encrypted parameters for Redpanda + GCP service account key |
-| Exchange Rates | NBP API | Free Polish National Bank rates, fetched once per producer invocation |
+| Secrets | AWS SSM Parameter Store | Encrypted GCP service account key |
+| Exchange Rates | NBP API | Free Polish National Bank rates, fetched once per invocation |
+| Visualization | Looker Studio | Free, native GCP, no extra infra |
+| No message broker | Direct BQ write | Pipeline is scheduled (not real-time), Kafka added complexity without value |
 
 ## Project Structure
 
 ```
 cs2-skin-vault/
-├── .github/workflows/dbt.yml       # GitHub Actions pipeline
+├── .github/workflows/dbt.yml           # GitHub Actions pipeline (with freshness check)
 ├── dbt/steam_tracker/
-│   ├── dbt_project.yml
-│   ├── packages.yml                # Uses dbt_utils v1.3.0
+│   ├── dbt_project.yml                 # Layer → dataset routing via +schema
+│   ├── packages.yml                    # Uses dbt_utils v1.3.0
+│   ├── macros/
+│   │   └── generate_schema_name.sql   # Routes staging/intermediate → steam_staging, marts → steam_marts
 │   └── models/
-│       ├── staging/                # Type casting, no business logic
-│       │   ├── sources.yml         # Defines steam_raw sources
+│       ├── staging/                    # → steam_staging dataset (views)
+│       │   ├── sources.yml
 │       │   ├── stg_assets.sql
+│       │   ├── stg_sales.sql
 │       │   ├── stg_prices.sql
 │       │   └── stg_exchange_rates.sql
-│       ├── intermediate/           # Reusable logic, not exposed
+│       ├── intermediate/               # → steam_staging dataset (views)
 │       │   ├── int_latest_prices.sql
 │       │   └── int_latest_exchange_rate.sql
-│       └── marts/                  # Business-facing tables
-│           ├── schema.yml          # dbt tests & descriptions
-│           ├── dim_assets.sql      # Deduplicated, surrogate key
-│           └── fct_portfolio.sql   # PnL + FX calculations
+│       └── marts/                      # → steam_marts dataset (tables)
+│           ├── schema.yml
+│           ├── dim_assets.sql
+│           ├── fct_portfolio.sql       # Unrealized PnL
+│           └── fct_realized_pnl.sql   # Realized PnL (closed positions)
 ├── lambda/
-│   ├── producer/
-│   │   ├── producer_lambda.py      # Scan DynamoDB, fetch prices, publish events
-│   │   ├── requirements.txt
-│   │   └── layer/                  # Lambda layer (zipped by Terraform)
-│   └── consumer/
-│       └── consumer_lambda.py      # Route Redpanda events to BigQuery tables
+│   └── producer/
+│       ├── producer_lambda.py          # Scan DynamoDB, validate prices, write to BigQuery
+│       ├── requirements.txt
+│       ├── layer/                      # Lambda layer (zipped by Terraform)
+│       └── tests/
+│           └── test_producer.py        # pytest unit tests (moto + unittest.mock)
 ├── terraform/
 │   ├── provider.tf
-│   ├── main.tf                     # Full infrastructure definition
+│   ├── main.tf                         # DynamoDB, Lambda, IAM, 3 BQ datasets, budget alert
 │   ├── variables.tf
-│   ├── terraform.tfvars            # Git-ignored
+│   ├── terraform.tfvars                # Git-ignored
 │   └── .terraform.lock.hcl
-└── scripts/seed_dim_assets.py
+└── scripts/
+    ├── seed_dim_assets.py
+    └── backfill.py                     # Manual backfill for a specific date
 ```
 
 ## Development Commands
@@ -103,9 +105,8 @@ cs2-skin-vault/
 - AWS CLI configured (`aws configure`)
 - Terraform >= 1.5
 - GCP project with BigQuery API enabled + service account JSON key
-- Redpanda Serverless account
 - Python 3.11
-- `pip install dbt-bigquery`
+- `pip install dbt-bigquery pytest moto boto3`
 
 ### Terraform
 
@@ -126,27 +127,23 @@ All commands run from `dbt/steam_tracker/`:
 ```bash
 cd dbt/steam_tracker
 
-dbt deps                          # Install packages
-dbt run                           # Run all models
-dbt run -s dim_assets             # Run specific model
-dbt run -s path:models/staging    # Run a layer
+dbt deps
+dbt run
+dbt run -s dim_assets
+dbt run -s path:models/staging
 dbt test
 dbt test -s fct_portfolio
 dbt docs generate && dbt docs serve
 ```
 
-### GitHub Actions (CI/CD)
+### Lambda — Unit Tests
 
-The dbt pipeline triggers automatically:
-1. On push to `main` if any files in `dbt/**` changed
-2. Daily at 08:00 UTC
-3. Manual trigger via `workflow_dispatch`
+```bash
+cd lambda/producer
+pytest tests/ -v
+```
 
-Steps: `dbt deps` → `dbt run` → `dbt test` → `dbt docs generate`
-
-Required secret: `GCP_SA_KEY` (GCP service account JSON contents)
-
-### Manual Lambda Invocation
+### Lambda — Manual Invocation
 
 ```bash
 aws lambda invoke \
@@ -157,14 +154,33 @@ aws lambda invoke \
 aws logs tail /aws/lambda/steam_price_producer --follow
 ```
 
+### Backfill
+
+```bash
+python scripts/backfill.py --date 2026-01-15
+```
+
+### GitHub Actions (CI/CD)
+
+The dbt pipeline triggers automatically:
+1. On push to `main` if any files in `dbt/**` changed
+2. Daily at 08:00 UTC
+3. Manual trigger via `workflow_dispatch`
+
+Steps: freshness check → `dbt deps` → `dbt run` → `dbt test` → `dbt docs generate`
+
+Required secret: `GCP_SA_KEY` (GCP service account JSON contents)
+
 ### Adding Inventory Items to DynamoDB
 
 ```bash
+# Buy event
 aws dynamodb put-item \
   --table-name steam_inventory_metadata \
   --item '{
     "asset_id": {"S": "UNIQUE-UUID"},
     "item_id": {"S": "AWP | Printstream (Well-Worn)"},
+    "event_type": {"S": "buy"},
     "buy_price": {"N": "164.81"},
     "buy_currency": {"S": "PLN"},
     "buy_date": {"S": "2026-02-06"},
@@ -172,6 +188,19 @@ aws dynamodb put-item \
     "purchase_channel": {"S": "CSFloat"},
     "quantity": {"N": "1"},
     "updated_at": {"S": "2026-02-06T00:00:00Z"}
+  }'
+
+# Sell event
+aws dynamodb put-item \
+  --table-name steam_inventory_metadata \
+  --item '{
+    "asset_id": {"S": "UNIQUE-UUID"},
+    "item_id": {"S": "AWP | Printstream (Well-Worn)"},
+    "event_type": {"S": "sell"},
+    "sell_price": {"N": "180.00"},
+    "sell_currency": {"S": "PLN"},
+    "sell_date": {"S": "2026-03-01"},
+    "updated_at": {"S": "2026-03-01T00:00:00Z"}
   }'
 ```
 
@@ -188,31 +217,42 @@ aws ssm put-parameter \
 
 ### Medallion Architecture
 
-**Staging** (views, no business logic):
-- `stg_assets` — type casts, uppercases `buy_currency`
-- `stg_prices` — casts price and timestamp
-- `stg_exchange_rates` — renames `source` → `rate_source` (avoids SQL reserved word)
+**Bronze** — `steam_raw` dataset (raw inserts from Lambda):
+- `assets_history` — buy events from DynamoDB
+- `sales_history` — sell events from DynamoDB
+- `prices_history` — Steam market prices (with `price_flagged` column for data quality)
+- `exchange_rates` — NBP USD/PLN rates
 
-**Intermediate** (views, reusable logic):
-- `int_latest_prices` — latest Steam price per `item_id` using `ROW_NUMBER()`
+All tables partitioned by `DATE(timestamp)`.
+
+**Silver** — `steam_staging` dataset (views, dbt staging + intermediate):
+- `stg_assets` — type casts, uppercases `buy_currency`
+- `stg_sales` — type casts, uppercases `sell_currency`
+- `stg_prices` — casts price and timestamp, exposes `price_flagged`
+- `stg_exchange_rates` — renames `source` → `rate_source`
+- `int_latest_prices` — latest unflagged Steam price per `item_id` using `ROW_NUMBER()`
 - `int_latest_exchange_rate` — latest USD/PLN rate
 
-**Marts** (materialized tables):
-- `dim_assets` — deduplicated asset dimension, surrogate key via `dbt_utils.generate_surrogate_key(['asset_id'])`
-- `fct_portfolio` — PnL calculations:
+**Gold** — `steam_marts` dataset (materialized tables):
+- `dim_assets` — deduplicated buy dimension, surrogate key via `dbt_utils.generate_surrogate_key(['asset_id'])`
+- `fct_portfolio` — unrealized PnL:
   - `current_value_usd = price_usd × quantity`
   - `current_value_pln = price_usd × usd_pln_rate × quantity`
   - `pnl_per_unit_pln = (price_usd × usd_pln_rate) - buy_price_pln`
   - `pnl_total_pln = pnl_per_unit_pln × quantity`
   - `pnl_pct = (pnl_per_unit_pln / buy_price_pln) × 100`
+- `fct_realized_pnl` — realized PnL on closed positions:
+  - Joins buy events with matching sell events by `asset_id`
+  - `realized_pnl_pln = sell_price_pln - buy_price_pln`
+  - `holding_period_days = sell_date - buy_date`
 
-### Event Schema (all JSON with `timestamp`)
+### dbt Schema Routing (`generate_schema_name` macro)
 
-**db-inventory-events**: `asset_id`, `item_id`, `buy_date`, `buy_price`, `buy_currency`, `quantity`, `category`, `purchase_channel`
-
-**market-price-events**: `item_id`, `price_usd`
-
-**exchange-rate-events**: `from_currency`, `to_currency`, `rate`, `source`
+```
+staging/     → steam_staging
+intermediate/ → steam_staging
+marts/       → steam_marts
+```
 
 ## Critical Implementation Details
 
@@ -220,41 +260,108 @@ aws ssm put-parameter \
 
 - Trigger: EventBridge daily 07:00 UTC (1 hour before dbt run)
 - Timeout: 60s / Memory: 256 MB
+- **Idempotency**: checks if today's date already exists in `steam_raw.prices_history` before writing — skips insert if data already present (prevents EventBridge double-fire duplicates)
+- **Backfill mode**: accepts optional `date` parameter in event payload to write data for a specific past date
 - Fetches NBP rate **once per invocation** (not per item)
 - Retries with exponential backoff: 3 attempts, 2s base for Steam + NBP calls
-- Redpanda credentials fetched from SSM and **cached at module level**
-- NBP fallback: tries `/today/` first; falls back to `/last/1/` on weekends/holidays
-
-### Consumer Lambda (`lambda/consumer/consumer_lambda.py`)
-
-- Trigger: Redpanda event source mappings (3 topics)
-- Timeout: 30s / Memory: 256 MB
-- Decodes Base64 payloads from Redpanda
-- Routes by topic to the corresponding BigQuery table via `insert_rows_json()`
 - GCP service account key fetched from SSM and **cached at module level**
+- NBP fallback: tries `/today/` first; falls back to `/last/1/` on weekends/holidays
+- Writes directly to BigQuery via `insert_rows_json()` (no message broker)
+
+### Steam Data Quality
+
+Prices are validated before insert:
+- **Flagging condition**: price is marked `price_flagged = TRUE` if Steam returns 0 recent sales or price deviates > 50% from 7-day median
+- Flagged prices are **stored but excluded** from `int_latest_prices` (not silently dropped)
+- `fct_portfolio` will show `NULL` current value for items with no valid price rather than stale/wrong data
+
+### Lambda Unit Tests (`lambda/producer/tests/test_producer.py`)
+
+Coverage:
+- NBP fallback logic (weekends/holidays → `/last/1/`)
+- Price spike detection (> 50% deviation flagged)
+- Idempotency check (no duplicate insert when date exists)
+- PnL calculation correctness
+- DynamoDB scan mocked via `moto`
+- Steam/NBP HTTP calls mocked via `unittest.mock`
 
 ### Lambda Layer
 
-Shared Python layer for both Lambdas: `google-cloud-bigquery`, `google-auth`, `confluent-kafka`, `requests`. Built and zipped by Terraform.
+Shared Python layer: `google-cloud-bigquery`, `google-auth`, `requests`. Built and zipped by Terraform.
+
+### BigQuery Table Partitioning
+
+All `steam_raw` tables partitioned by `DATE(timestamp)`:
+- Reduces scan cost on historical queries
+- Enables partition-based idempotency check (`WHERE DATE(timestamp) = CURRENT_DATE()`)
 
 ### CloudWatch Alarms
 
 Four alarms → SNS email:
-- Producer errors (any), producer duration > 48s (80% of timeout)
-- Consumer errors (any), consumer duration > 24s (80% of timeout)
+- Producer errors (any)
+- Producer duration > 48s (80% of timeout)
+- Data freshness: custom metric if today's BQ partition is empty at 07:30 UTC
+
+### Data Freshness Check (GitHub Actions)
+
+Before `dbt run`, a Python step queries BigQuery:
+```sql
+SELECT COUNT(*) FROM steam_raw.prices_history
+WHERE DATE(timestamp) = CURRENT_DATE()
+```
+If count = 0 → workflow fails with alert, dbt does not run on stale data.
+
+### Secret Rotation
+
+GCP service account key stored in SSM (`/steam-tracker/gcp-key`) should be rotated every 90 days. Rotation process: generate new key in GCP IAM → update SSM parameter → verify Lambda invocation succeeds → delete old key.
 
 ## Security Model
 
 - **DynamoDB**: PITR enabled
 - **Secrets**: SSM Parameter Store (`SecureString`)
 - **IAM**: Least-privilege per Lambda
-  - Producer: DynamoDB read + SSM read (Redpanda creds)
-  - Consumer: SSM read (GCP key) only
+  - Producer: DynamoDB read + SSM read (GCP key)
 - **GCP key**: Never committed; GitHub Actions writes to `/tmp` only
-- **Redpanda**: SASL_SSL with SCRAM-SHA-256
+- **Key rotation**: 90-day cycle (manual)
 
 ## Environment Variables (Terraform-managed)
 
-**Producer**: `DYNAMODB_TABLE`, `RP_BOOTSTRAP_PARAM`, `RP_USER_PARAM`, `RP_PASS_PARAM`
+**Producer**: `DYNAMODB_TABLE`, `GCP_PROJECT_ID`, `BQ_DATASET_RAW`, `GCP_KEY_PARAM`
 
-**Consumer**: `GCP_PROJECT_ID`, `BQ_DATASET`, `GCP_KEY_PARAM`
+## BigQuery Budget Alert
+
+Terraform-managed budget alert: email notification when GCP spend exceeds $5/month on the project.
+
+## Environments
+
+| Environment | Branch | BigQuery datasets | Lambda |
+|-------------|--------|-------------------|--------|
+| Production | `main` | `steam_raw`, `steam_staging`, `steam_marts` | `steam_price_producer` |
+| Development | `develop` / `feature/*` | `steam_raw_dev`, `steam_staging_dev`, `steam_marts_dev` | shared (no dev Lambda) |
+
+### Branch Strategy
+
+```
+feature/* → develop → main
+```
+
+- `main` — production, protected (PR required)
+- `develop` — integration branch, CI runs dbt in dev environment
+- `feature/*` — individual changes, PR to develop
+
+### dbt Targets
+
+- `dev` (default locally) — writes to `*_dev` BigQuery datasets
+- `prod` — writes to production datasets, used only by GitHub Actions on `main`
+
+```bash
+dbt run --target dev   # local development
+dbt run --target prod  # production (GitHub Actions only)
+```
+
+### GitHub Actions Environments
+
+- **PR to `main` or `develop`** — runs `dbt run --target dev` + `dbt test` against `*_dev` datasets
+- **Push to `main`** — runs `dbt run --target prod` + `dbt test` + `dbt docs generate`
+
+Dev datasets cost $0 at this scale — identical small data split across separate BigQuery datasets.

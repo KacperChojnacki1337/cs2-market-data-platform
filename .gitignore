@@ -24,5 +24,6 @@ secrets/
 
 # Inne
 .DS_Store
+PLANNED_CHANGES.md
 
 lambda/producer/layer/python/
