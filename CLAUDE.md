@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Language
+
+All code, comments, commit messages, PR descriptions, issue titles, and documentation must be written in **English**. No exceptions.
+
 ## Project Overview
 
 **CS2 Skin Portfolio Tracker** is a production-grade data engineering pipeline that tracks Counter-Strike 2 skin inventory, fetches real-time market prices from Steam, and calculates portfolio value with both unrealized and realized PnL in USD and PLN. It demonstrates a modern data architecture spanning AWS (DynamoDB, Lambda) and GCP (BigQuery, Looker Studio) with dbt transformations.
