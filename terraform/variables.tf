@@ -20,12 +20,6 @@ variable "gcp_credentials_file" {
   type        = string
 }
 
-variable "redpanda_password" {
-  description = "Password for Redpanda lambda-producer user"
-  type        = string
-  sensitive   = true
-}
-
 variable "alert_email" {
   description = "Email address for CloudWatch alarm notifications"
   type        = string
