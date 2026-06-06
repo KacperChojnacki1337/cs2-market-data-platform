@@ -194,6 +194,9 @@ resource "aws_lambda_function" "steam_producer" {
   environment {
     variables = {
       DYNAMODB_TABLE = aws_dynamodb_table.inventory_metadata.name
+      GCP_PROJECT_ID = var.gcp_project_id
+      BQ_DATASET_RAW = "steam_raw"
+      GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
     }
   }
 }
