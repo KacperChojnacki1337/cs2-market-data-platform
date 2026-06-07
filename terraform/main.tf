@@ -50,6 +50,11 @@ resource "google_bigquery_table" "raw_assets" {
   table_id            = "assets_history"
   deletion_protection = false
 
+  time_partitioning {
+    type  = "DAY"
+    field = "last_updated"
+  }
+
   schema = <<EOF
 [
   {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
@@ -71,6 +76,11 @@ resource "google_bigquery_table" "raw_prices" {
   table_id            = "prices_history"
   deletion_protection = false
 
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
   schema = <<EOF
 [
   {"name": "item_id",   "type": "STRING",    "mode": "REQUIRED"},
@@ -86,6 +96,11 @@ resource "google_bigquery_table" "raw_exchange_rates" {
   table_id            = "exchange_rates"
   deletion_protection = false
 
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
   schema = <<EOF
 [
   {"name": "from_currency", "type": "STRING",    "mode": "REQUIRED"},
@@ -93,6 +108,32 @@ resource "google_bigquery_table" "raw_exchange_rates" {
   {"name": "rate",          "type": "FLOAT",     "mode": "REQUIRED"},
   {"name": "source",        "type": "STRING",    "mode": "NULLABLE"},
   {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
+]
+EOF
+}
+
+# --- Raw Table: Sales History (Bronze) ---
+resource "google_bigquery_table" "raw_sales" {
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "sales_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "sell_price",       "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "sell_currency",    "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "sell_date",        "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "category",         "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "purchase_channel", "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",         "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "timestamp",        "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }
