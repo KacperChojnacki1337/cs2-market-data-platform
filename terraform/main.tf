@@ -26,11 +26,24 @@ resource "aws_dynamodb_table" "inventory_metadata" {
 # 2. GCP: BigQuery - Medallion Architecture
 # ==========================================
 
+locals {
+  sa_email = jsondecode(file(var.gcp_credentials_file)).client_email
+}
+
 # --- Bronze Layer: Raw Data Ingestion ---
 resource "google_bigquery_dataset" "raw_dataset" {
   dataset_id                 = "steam_raw"
   friendly_name              = "Steam Raw Data"
   description                = "Bronze Layer: Raw ingestion from AWS and Steam API"
+  location                   = "EU"
+  delete_contents_on_destroy = false
+}
+
+# --- Silver Layer: Staging & Intermediate (dbt views) ---
+resource "google_bigquery_dataset" "staging_dataset" {
+  dataset_id                 = "steam_staging"
+  friendly_name              = "Steam Staging"
+  description                = "Silver Layer: Typed views and intermediate models via dbt"
   location                   = "EU"
   delete_contents_on_destroy = false
 }
@@ -42,6 +55,56 @@ resource "google_bigquery_dataset" "marts_dataset" {
   description                = "Gold Layer: Cleaned and modeled Star Schema (Kimball)"
   location                   = "EU"
   delete_contents_on_destroy = false
+}
+
+# --- Dev Datasets (mirror of prod, for local dbt development) ---
+resource "google_bigquery_dataset" "raw_dataset_dev" {
+  dataset_id                 = "steam_raw_dev"
+  friendly_name              = "Steam Raw Data (Dev)"
+  description                = "Bronze Layer Dev"
+  location                   = "EU"
+  delete_contents_on_destroy = true
+}
+
+resource "google_bigquery_dataset" "staging_dataset_dev" {
+  dataset_id                 = "steam_staging_dev"
+  friendly_name              = "Steam Staging (Dev)"
+  description                = "Silver Layer Dev"
+  location                   = "EU"
+  delete_contents_on_destroy = true
+}
+
+resource "google_bigquery_dataset" "marts_dataset_dev" {
+  dataset_id                 = "steam_marts_dev"
+  friendly_name              = "Steam Analytics Marts (Dev)"
+  description                = "Gold Layer Dev"
+  location                   = "EU"
+  delete_contents_on_destroy = true
+}
+
+# --- IAM: Service Account access to new datasets ---
+resource "google_bigquery_dataset_iam_member" "staging_sa_editor" {
+  dataset_id = google_bigquery_dataset.staging_dataset.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "raw_dev_sa_editor" {
+  dataset_id = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "staging_dev_sa_editor" {
+  dataset_id = google_bigquery_dataset.staging_dataset_dev.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "marts_dev_sa_editor" {
+  dataset_id = google_bigquery_dataset.marts_dataset_dev.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
 }
 
 # --- Raw Table: Assets History (Bronze) ---
