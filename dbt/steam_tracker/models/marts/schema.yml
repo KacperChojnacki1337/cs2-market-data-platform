@@ -29,3 +29,17 @@ models:
       - name: usd_pln_rate
         tests:
           - not_null
+
+  - name: fct_portfolio_history
+    description: "Daily portfolio value snapshots — enables time-series charts in Looker Studio"
+    columns:
+      - name: snapshot_date
+        tests:
+          - unique
+          - not_null
+      - name: portfolio_value_pln
+        tests:
+          - not_null
+      - name: active_positions
+        tests:
+          - not_null
