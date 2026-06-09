@@ -6,15 +6,23 @@ on:
       - main
     paths:
       - 'dbt/**'
+  pull_request:
+    branches:
+      - main
+      - develop
   schedule:
-    # Runs daily at 08:00 UTC — after producer lambda collects data
+    # Runs daily at 08:00 UTC — 1 hour after producer Lambda collects data
     - cron: '0 8 * * *'
   workflow_dispatch:
-    # Manual trigger for debugging
 
 jobs:
-  dbt:
-    name: dbt run + test + docs
+  # -----------------------------------------------------------------------
+  # CI job: runs on every PR to main or develop
+  # Uses *_dev datasets — never touches production data
+  # -----------------------------------------------------------------------
+  dbt-ci:
+    name: dbt CI (dev datasets)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -30,21 +38,20 @@ jobs:
         run: pip install dbt-bigquery
 
       - name: Write GCP service account key
-        run: |
-          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/gcp_key.json
+        run: echo '${{ secrets.GCP_SA_KEY }}' > /tmp/gcp_key.json
 
       - name: Write dbt profiles
         run: |
           mkdir -p ~/.dbt
-          cat > ~/.dbt/profiles.yml << EOF
+          cat > ~/.dbt/profiles.yml << 'EOF'
           steam_tracker:
-            target: prod
+            target: dev
             outputs:
-              prod:
+              dev:
                 type: bigquery
                 method: service-account
                 project: steam-tracker-portfolio
-                dataset: steam_marts
+                dataset: steam_raw_dev
                 location: EU
                 keyfile: /tmp/gcp_key.json
                 threads: 4
@@ -55,13 +62,67 @@ jobs:
         working-directory: dbt/steam_tracker
         run: dbt deps
 
-      - name: dbt run
+      - name: dbt run (dev)
         working-directory: dbt/steam_tracker
-        run: dbt run
+        run: dbt run --target dev
 
-      - name: dbt test
+      - name: dbt test (dev)
         working-directory: dbt/steam_tracker
-        run: dbt test
+        run: dbt test --target dev
+
+  # -----------------------------------------------------------------------
+  # Prod job: runs on push to main (dbt/** changed), schedule, or manual
+  # Uses production datasets
+  # -----------------------------------------------------------------------
+  dbt-prod:
+    name: dbt prod run + docs
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt-bigquery
+        run: pip install dbt-bigquery
+
+      - name: Write GCP service account key
+        run: echo '${{ secrets.GCP_SA_KEY }}' > /tmp/gcp_key.json
+
+      - name: Write dbt profiles
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << 'EOF'
+          steam_tracker:
+            target: prod
+            outputs:
+              prod:
+                type: bigquery
+                method: service-account
+                project: steam-tracker-portfolio
+                dataset: steam_raw
+                location: EU
+                keyfile: /tmp/gcp_key.json
+                threads: 4
+                timeout_seconds: 300
+          EOF
+
+      - name: dbt deps
+        working-directory: dbt/steam_tracker
+        run: dbt deps
+
+      - name: dbt run (prod)
+        working-directory: dbt/steam_tracker
+        run: dbt run --target prod
+
+      - name: dbt test (prod)
+        working-directory: dbt/steam_tracker
+        run: dbt test --target prod
 
       - name: dbt docs generate
         working-directory: dbt/steam_tracker
@@ -73,5 +134,3 @@ jobs:
           name: dbt-docs
           path: dbt/steam_tracker/target/
           retention-days: 7
-
-
