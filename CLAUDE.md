@@ -231,21 +231,25 @@ All tables partitioned by `DATE(timestamp)`.
 
 **Silver** — `steam_staging` dataset (views, dbt staging + intermediate):
 - `stg_assets` — type casts, uppercases `buy_currency`
-- `stg_sales` — type casts, uppercases `sell_currency`
-- `stg_prices` — casts price and timestamp, exposes `price_flagged`
-- `stg_exchange_rates` — renames `source` → `rate_source`
-- `int_latest_prices` — latest unflagged Steam price per `item_id` using `ROW_NUMBER()`
+- `stg_sales` — type casts, uppercases `sell_currency` *(planned — Issue #6)*
+- `stg_prices` — casts price, renames `timestamp` → `fetched_at`; `price_flagged` column planned in Issue #8
+- `stg_exchange_rates` — renames `source` → `rate_source`, `timestamp` → `fetched_at`
+- `int_latest_prices` — latest Steam price per `item_id` using `ROW_NUMBER()`
 - `int_latest_exchange_rate` — latest USD/PLN rate
 
 **Gold** — `steam_marts` dataset (materialized tables):
 - `dim_assets` — deduplicated buy dimension, surrogate key via `dbt_utils.generate_surrogate_key(['asset_id'])`
-- `fct_portfolio` — unrealized PnL:
+- `fct_portfolio` — current unrealized PnL per asset (recreated daily):
   - `current_value_usd = price_usd × quantity`
   - `current_value_pln = price_usd × usd_pln_rate × quantity`
   - `pnl_per_unit_pln = (price_usd × usd_pln_rate) - buy_price_pln`
   - `pnl_total_pln = pnl_per_unit_pln × quantity`
   - `pnl_pct = (pnl_per_unit_pln / buy_price_pln) × 100`
-- `fct_realized_pnl` — realized PnL on closed positions:
+- `fct_portfolio_history` — daily portfolio value snapshots (incremental, partitioned by `snapshot_date`):
+  - Joins `stg_prices` × `stg_assets` × `stg_exchange_rates` by date
+  - `portfolio_value_usd/pln`, `total_cost_pln`, `unrealized_pnl_pln/pct`, `active_positions`
+  - Enables time-series charts in Looker Studio; sold position exclusion added after Issue #6
+- `fct_realized_pnl` — realized PnL on closed positions *(planned — Issue #6)*:
   - Joins buy events with matching sell events by `asset_id`
   - `realized_pnl_pln = sell_price_pln - buy_price_pln`
   - `holding_period_days = sell_date - buy_date`
@@ -264,7 +268,8 @@ marts/       → steam_marts
 
 - Trigger: EventBridge daily 07:00 UTC (1 hour before dbt run)
 - Timeout: 60s / Memory: 256 MB
-- **Idempotency**: checks if today's date already exists in `steam_raw.prices_history` before writing — skips insert if data already present (prevents EventBridge double-fire duplicates)
+- **Event-driven assets insert**: queries `SELECT DISTINCT asset_id FROM assets_history` before the loop — only inserts buy events not yet present in BigQuery (buy events are immutable, no re-inserts needed)
+- **Idempotency**: checks if today's date already exists in `steam_raw.prices_history` before writing — skips insert if data already present (prevents EventBridge double-fire duplicates) *(planned — Issue #7)*
 - **Backfill mode**: accepts optional `date` parameter in event payload to write data for a specific past date
 - Fetches NBP rate **once per invocation** (not per item)
 - Retries with exponential backoff: 3 attempts, 2s base for Steam + NBP calls
