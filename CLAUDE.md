@@ -63,7 +63,7 @@ Looker Studio (dashboard over steam_marts)
 ## Project Structure
 
 ```
-cs2-skin-vault/
+cs2-market-data-platform/
 ├── .github/workflows/dbt.yml           # GitHub Actions pipeline (with freshness check)
 ├── dbt/steam_tracker/
 │   ├── dbt_project.yml                 # Layer → dataset routing via +schema
