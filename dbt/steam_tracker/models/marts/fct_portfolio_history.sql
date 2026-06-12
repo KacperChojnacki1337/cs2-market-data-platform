@@ -59,10 +59,8 @@ select
 from price_dates pd
 join daily_prices              p on pd.snapshot_date = p.price_date
 join {{ ref('stg_assets') }}   a on p.item_id        = a.item_id
-    and not exists (
-        select 1 from sales s
-        where s.item_id = a.item_id
-          and s.sell_date <= pd.snapshot_date
-    )
 join daily_rates               r on pd.snapshot_date = r.rate_date
+left join sales             sold on a.item_id        = sold.item_id
+    and sold.sell_date <= pd.snapshot_date
+where sold.item_id is null
 group by pd.snapshot_date, r.usd_pln_rate
