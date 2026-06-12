@@ -231,7 +231,7 @@ All tables partitioned by `DATE(timestamp)`.
 
 **Silver** — `steam_staging` dataset (views, dbt staging + intermediate):
 - `stg_assets` — type casts, uppercases `buy_currency`
-- `stg_sales` — type casts, uppercases `sell_currency` *(planned — Issue #6)*
+- `stg_sales` — type casts, uppercases `sell_currency`, renames `timestamp` → `sold_at`
 - `stg_prices` — casts price, renames `timestamp` → `fetched_at`; `price_flagged` column planned in Issue #8
 - `stg_exchange_rates` — renames `source` → `rate_source`, `timestamp` → `fetched_at`
 - `int_latest_prices` — latest Steam price per `item_id` using `ROW_NUMBER()`
@@ -248,10 +248,11 @@ All tables partitioned by `DATE(timestamp)`.
 - `fct_portfolio_history` — daily portfolio value snapshots (incremental, partitioned by `snapshot_date`):
   - Joins `stg_prices` × `stg_assets` × `stg_exchange_rates` by date
   - `portfolio_value_usd/pln`, `total_cost_pln`, `unrealized_pnl_pln/pct`, `active_positions`
-  - Enables time-series charts in Looker Studio; sold position exclusion added after Issue #6
-- `fct_realized_pnl` — realized PnL on closed positions *(planned — Issue #6)*:
-  - Joins buy events with matching sell events by `asset_id`
+  - Enables time-series charts in Looker Studio; sold positions excluded via time-aware LEFT JOIN anti-join (`sell_date <= snapshot_date`)
+- `fct_realized_pnl` — realized PnL on closed positions:
+  - Joins `dim_assets` × `stg_sales` by `item_id`
   - `realized_pnl_pln = sell_price_pln - buy_price_pln`
+  - `realized_pnl_pct = (realized_pnl_pln / buy_price_pln) × 100`
   - `holding_period_days = sell_date - buy_date`
 
 ### dbt Schema Routing (`generate_schema_name` macro)
@@ -268,7 +269,9 @@ marts/       → steam_marts
 
 - Trigger: EventBridge daily 07:00 UTC (1 hour before dbt run)
 - Timeout: 60s / Memory: 256 MB
+- **Event routing**: `event_type` field routes items — `buy` → `assets_history` + Steam price fetch, `sell` → `sales_history` (no price fetch for sold items). Missing `event_type` defaults to `buy` for backwards compatibility
 - **Event-driven assets insert**: queries `SELECT DISTINCT asset_id FROM assets_history` before the loop — only inserts buy events not yet present in BigQuery (buy events are immutable, no re-inserts needed)
+- **Event-driven sales insert**: queries `SELECT DISTINCT asset_id FROM sales_history` before the loop — skips re-inserts of already recorded sell events
 - **Idempotency**: checks if today's date already exists in `steam_raw.prices_history` before writing — skips insert if data already present (prevents EventBridge double-fire duplicates) *(planned — Issue #7)*
 - **Backfill mode**: accepts optional `date` parameter in event payload to write data for a specific past date
 - Fetches NBP rate **once per invocation** (not per item)
