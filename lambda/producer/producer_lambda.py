@@ -76,6 +76,7 @@ def lambda_handler(event, context):
     current_ts = datetime.now(timezone.utc).isoformat()
 
     assets_rows = []
+    sales_rows = []
     prices_rows = []
     exchange_rate_rows = []
 
@@ -88,7 +89,16 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"Warning: could not fetch existing asset_ids ({e}), will insert all.")
 
-    # 2. Fetch NBP rate once per invocation
+    # 2. Fetch existing sell asset_ids — sell events are immutable, skip re-inserts
+    existing_sell_ids = set()
+    try:
+        query = f"SELECT DISTINCT asset_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.sales_history`"
+        existing_sell_ids = {row.asset_id for row in client.query(query).result()}
+        print(f"Found {len(existing_sell_ids)} existing sells, will skip re-inserts.")
+    except Exception as e:
+        print(f"Warning: could not fetch existing sell_ids ({e}), will insert all.")
+
+    # 3. Fetch NBP rate once per invocation
     usd_pln_rate = get_nbp_rate('USD')
     if usd_pln_rate is not None:
         exchange_rate_rows.append({
@@ -105,31 +115,48 @@ def lambda_handler(event, context):
     for item in items:
         item_id = item['item_id']
         asset_id = item.get('asset_id')
+        event_type = item.get('event_type', 'buy')
 
-        # 3. Build assets row — only new buy events not yet in BigQuery
-        if item.get('event_type', 'buy') == 'buy' and asset_id not in existing_asset_ids:
-            assets_rows.append({
-                "asset_id": asset_id,
-                "item_id": item_id,
-                "buy_date": item.get('buy_date'),
-                "buy_price": float(item.get('buy_price', 0)),
-                "buy_currency": item.get('buy_currency', 'PLN'),
-                "quantity": int(item.get('quantity', 1)),
-                "category": item.get('category', 'Skin'),
-                "purchase_channel": item.get('purchase_channel', 'Unknown'),
-                "last_updated": current_ts
-            })
+        if event_type == 'buy':
+            # 4a. Build assets row — only new buy events not yet in BigQuery
+            if asset_id not in existing_asset_ids:
+                assets_rows.append({
+                    "asset_id": asset_id,
+                    "item_id": item_id,
+                    "buy_date": item.get('buy_date'),
+                    "buy_price": float(item.get('buy_price', 0)),
+                    "buy_currency": item.get('buy_currency', 'PLN'),
+                    "quantity": int(item.get('quantity', 1)),
+                    "category": item.get('category', 'Skin'),
+                    "purchase_channel": item.get('purchase_channel', 'Unknown'),
+                    "last_updated": current_ts
+                })
 
-        # 4. Fetch Steam price
-        market_price = get_steam_price(item_id)
-        if market_price is not None:
-            prices_rows.append({
-                "item_id": item_id,
-                "price_usd": market_price,
-                "timestamp": current_ts
-            })
-        else:
-            print(f"Could not fetch price for {item_id}, skipping price row.")
+            # 4b. Fetch Steam price — only for still-owned (buy) items
+            market_price = get_steam_price(item_id)
+            if market_price is not None:
+                prices_rows.append({
+                    "item_id": item_id,
+                    "price_usd": market_price,
+                    "timestamp": current_ts
+                })
+            else:
+                print(f"Could not fetch price for {item_id}, skipping price row.")
+
+        elif event_type == 'sell':
+            # 4c. Build sales row — only new sell events not yet in BigQuery
+            if asset_id not in existing_sell_ids:
+                sales_rows.append({
+                    "asset_id": asset_id,
+                    "item_id": item_id,
+                    "sell_price": float(item.get('sell_price', 0)),
+                    "sell_currency": item.get('sell_currency', 'PLN'),
+                    "sell_date": item.get('sell_date'),
+                    "category": item.get('category', 'Skin'),
+                    "purchase_channel": item.get('purchase_channel', 'Unknown'),
+                    "quantity": int(item.get('quantity', 1)),
+                    "timestamp": current_ts
+                })
 
     # 5. Write to BigQuery
     results = {}
@@ -139,6 +166,12 @@ def lambda_handler(event, context):
         errors = client.insert_rows_json(table_id, assets_rows)
         results['assets'] = "success" if not errors else f"errors: {errors}"
         print(f"assets_history: {results['assets']}")
+
+    if sales_rows:
+        table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.sales_history"
+        errors = client.insert_rows_json(table_id, sales_rows)
+        results['sales'] = "success" if not errors else f"errors: {errors}"
+        print(f"sales_history: {results['sales']}")
 
     if prices_rows:
         table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history"
@@ -155,6 +188,7 @@ def lambda_handler(event, context):
     summary = {
         "status": "success",
         "assets_written": len(assets_rows),
+        "sales_written": len(sales_rows),
         "prices_written": len(prices_rows),
         "exchange_rates_written": len(exchange_rate_rows),
         "results": results
