@@ -33,6 +33,11 @@ daily_rates as (
         partition by DATE(fetched_at)
         order by fetched_at desc
     ) = 1
+),
+
+sales as (
+    select item_id, sell_date
+    from {{ ref('stg_sales') }}
 )
 
 select
@@ -54,5 +59,10 @@ select
 from price_dates pd
 join daily_prices              p on pd.snapshot_date = p.price_date
 join {{ ref('stg_assets') }}   a on p.item_id        = a.item_id
+    and not exists (
+        select 1 from sales s
+        where s.item_id = a.item_id
+          and s.sell_date <= pd.snapshot_date
+    )
 join daily_rates               r on pd.snapshot_date = r.rate_date
 group by pd.snapshot_date, r.usd_pln_rate
