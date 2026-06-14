@@ -272,7 +272,7 @@ marts/       → steam_marts
 - **Event routing**: `event_type` field routes items — `buy` → `assets_history` + Steam price fetch, `sell` → `sales_history` (no price fetch for sold items). Missing `event_type` defaults to `buy` for backwards compatibility
 - **Event-driven assets insert**: queries `SELECT DISTINCT asset_id FROM assets_history` before the loop — only inserts buy events not yet present in BigQuery (buy events are immutable, no re-inserts needed)
 - **Event-driven sales insert**: queries `SELECT DISTINCT asset_id FROM sales_history` before the loop — skips re-inserts of already recorded sell events
-- **Idempotency**: checks if today's date already exists in `steam_raw.prices_history` before writing — skips insert if data already present (prevents EventBridge double-fire duplicates) *(planned — Issue #7)*
+- **Idempotency**: data quality guaranteed by `ROW_NUMBER()` deduplication in the silver layer (`int_latest_prices`, `int_latest_exchange_rate`); `assets_history` and `sales_history` protected by event-driven insert checks. EventBridge double-fire detected via structured CloudWatch log (`DOUBLE_FIRE_DETECTED | date=... | existing_price_rows=...`) — non-blocking by design so legitimate re-runs are never blocked
 - **Backfill mode**: accepts optional `date` parameter in event payload to write data for a specific past date
 - Fetches NBP rate **once per invocation** (not per item)
 - Retries with exponential backoff: 3 attempts, 2s base for Steam + NBP calls

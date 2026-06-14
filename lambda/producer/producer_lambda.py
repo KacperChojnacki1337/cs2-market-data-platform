@@ -66,14 +66,33 @@ def get_nbp_rate(currency='USD', retries=3, backoff=2):
     return None
 
 def lambda_handler(event, context):
+    request_id = context.aws_request_id if context else 'local'
+    current_ts = datetime.now(timezone.utc).isoformat()
+    run_date = current_ts[:10]
+
+    print(f"INVOCATION_START | date={run_date} | request_id={request_id}")
     print(f"Scanning DynamoDB: {DYNAMODB_TABLE}")
+
     items = inventory_table.scan().get('Items', [])
 
     if not items:
+        print(f"INVOCATION_END | date={run_date} | status=no_items")
         return {'statusCode': 200, 'body': 'No items found.'}
 
     client = bigquery.Client(credentials=_GCP_CREDENTIALS, project=GCP_PROJECT_ID)
-    current_ts = datetime.now(timezone.utc).isoformat()
+
+    # Non-blocking double-fire detection: log warning if today's prices already exist.
+    # Data quality is guaranteed by ROW_NUMBER() deduplication in int_latest_prices.
+    try:
+        check = f"SELECT COUNT(*) as cnt FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history` WHERE DATE(timestamp) = '{run_date}'"
+        rows = list(client.query(check).result())
+        existing_price_rows = rows[0].cnt
+        if existing_price_rows > 0:
+            print(f"DOUBLE_FIRE_DETECTED | date={run_date} | existing_price_rows={existing_price_rows} | proceeding (silver layer deduplicates via ROW_NUMBER)")
+        else:
+            print(f"IDEMPOTENCY_OK | date={run_date} | no existing price rows")
+    except Exception as e:
+        print(f"Warning: double-fire check failed ({e}), proceeding.")
 
     assets_rows = []
     sales_rows = []
@@ -193,7 +212,7 @@ def lambda_handler(event, context):
         "exchange_rates_written": len(exchange_rate_rows),
         "results": results
     }
-    print(f"Summary: {summary}")
+    print(f"INVOCATION_END | date={run_date} | assets_written={len(assets_rows)} | sales_written={len(sales_rows)} | prices_written={len(prices_rows)} | exchange_rates_written={len(exchange_rate_rows)}")
 
     return {
         'statusCode': 200,
