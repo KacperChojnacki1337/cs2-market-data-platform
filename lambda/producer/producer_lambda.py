@@ -25,7 +25,7 @@ def _load_gcp_credentials():
 
 _GCP_CREDENTIALS = _load_gcp_credentials()
 
-def get_steam_price(market_hash_name, retries=3, backoff=2):
+def get_steam_price(market_hash_name, median_7d=None, retries=3, backoff=2):
     encoded_name = requests.utils.quote(market_hash_name)
     url = f"https://steamcommunity.com/market/priceoverview/?appid=730&currency=1&market_hash_name={encoded_name}"
     for attempt in range(retries):
@@ -34,8 +34,22 @@ def get_steam_price(market_hash_name, retries=3, backoff=2):
             if response.status_code == 200:
                 data = response.json()
                 if data.get("success") and "lowest_price" in data:
-                    price_str = data["lowest_price"].replace("$", "").replace(",", "")
-                    return float(price_str)
+                    price = float(data["lowest_price"].replace("$", "").replace(",", ""))
+
+                    volume_str = data.get("volume", "0").replace(",", "")
+                    try:
+                        volume = int(volume_str)
+                    except (ValueError, AttributeError):
+                        volume = 0
+
+                    flagged = volume == 0
+                    if not flagged and median_7d is not None and median_7d > 0:
+                        deviation = abs(price - median_7d) / median_7d
+                        if deviation > 0.5:
+                            flagged = True
+                            print(f"PRICE_SPIKE | {market_hash_name} | price={price} | median_7d={median_7d:.2f} | deviation={deviation:.0%}")
+
+                    return price, flagged
         except Exception as e:
             print(f"Attempt {attempt + 1}/{retries} failed for {market_hash_name}: {e}")
             if attempt < retries - 1:
@@ -117,7 +131,21 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"Warning: could not fetch existing sell_ids ({e}), will insert all.")
 
-    # 3. Fetch NBP rate once per invocation
+    # 3. Fetch 7-day price medians for spike detection (one BQ query for all items)
+    medians_7d = {}
+    try:
+        median_query = f"""
+            SELECT item_id, APPROX_QUANTILES(price_usd, 2)[OFFSET(1)] as median_price
+            FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history`
+            WHERE DATE(timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+            GROUP BY item_id
+        """
+        medians_7d = {row.item_id: float(row.median_price) for row in client.query(median_query).result()}
+        print(f"SPIKE_DETECTION | loaded 7-day medians for {len(medians_7d)} items")
+    except Exception as e:
+        print(f"Warning: could not fetch 7-day medians ({e}), spike detection disabled.")
+
+    # 4. Fetch NBP rate once per invocation
     usd_pln_rate = get_nbp_rate('USD')
     if usd_pln_rate is not None:
         exchange_rate_rows.append({
@@ -152,13 +180,17 @@ def lambda_handler(event, context):
                 })
 
             # 4b. Fetch Steam price — only for still-owned (buy) items
-            market_price = get_steam_price(item_id)
-            if market_price is not None:
+            result = get_steam_price(item_id, median_7d=medians_7d.get(item_id))
+            if result is not None:
+                price_usd, price_flagged = result
                 prices_rows.append({
                     "item_id": item_id,
-                    "price_usd": market_price,
+                    "price_usd": price_usd,
+                    "price_flagged": price_flagged,
                     "timestamp": current_ts
                 })
+                if price_flagged:
+                    print(f"PRICE_FLAGGED | {item_id} | price_usd={price_usd}")
             else:
                 print(f"Could not fetch price for {item_id}, skipping price row.")
 

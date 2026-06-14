@@ -146,9 +146,10 @@ resource "google_bigquery_table" "raw_prices" {
 
   schema = <<EOF
 [
-  {"name": "item_id",   "type": "STRING",    "mode": "REQUIRED"},
-  {"name": "price_usd", "type": "FLOAT",     "mode": "NULLABLE"},
-  {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  {"name": "item_id",       "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "price_usd",     "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "price_flagged", "type": "BOOLEAN",   "mode": "NULLABLE", "description": "TRUE if price is anomalous: zero volume or >50% deviation from 7-day median"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }
@@ -239,9 +240,10 @@ resource "google_bigquery_table" "dev_prices" {
 
   schema = <<EOF
 [
-  {"name": "item_id",   "type": "STRING",    "mode": "REQUIRED"},
-  {"name": "price_usd", "type": "FLOAT",     "mode": "NULLABLE"},
-  {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  {"name": "item_id",       "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "price_usd",     "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "price_flagged", "type": "BOOLEAN",   "mode": "NULLABLE", "description": "TRUE if price is anomalous: zero volume or >50% deviation from 7-day median"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }

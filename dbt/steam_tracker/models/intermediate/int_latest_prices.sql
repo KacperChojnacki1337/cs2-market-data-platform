@@ -2,6 +2,11 @@ with prices as (
     select * from {{ ref('stg_prices') }}
 ),
 
+valid_prices as (
+    select * from prices
+    where not coalesce(price_flagged, false)
+),
+
 latest as (
     select
         item_id,
@@ -11,7 +16,7 @@ latest as (
             partition by item_id
             order by fetched_at desc
         ) as rn
-    from prices
+    from valid_prices
 )
 
 select
