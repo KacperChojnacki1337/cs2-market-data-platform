@@ -8,6 +8,13 @@ os.environ.setdefault('GCP_PROJECT_ID', 'test-project')
 os.environ.setdefault('BQ_DATASET_RAW', 'test_raw')
 os.environ.setdefault('GCP_KEY_PARAM', '/test/gcp-key')
 
+# Inject fake Google modules — google-cloud-bigquery is not installed in the test env.
+# Python resolves "from google.cloud import bigquery" against sys.modules first,
+# so injecting MagicMocks here prevents any real import attempt.
+for _mod in ['google', 'google.cloud', 'google.cloud.bigquery',
+             'google.oauth2', 'google.oauth2.service_account']:
+    sys.modules.setdefault(_mod, MagicMock())
+
 _FAKE_GCP_KEY = json.dumps({
     "type": "service_account",
     "project_id": "test-project",
@@ -26,14 +33,11 @@ _mock_ssm.get_parameter.return_value = {'Parameter': {'Value': _FAKE_GCP_KEY}}
 
 _p1 = patch('boto3.client', return_value=_mock_ssm)
 _p2 = patch('boto3.resource')
-_p3 = patch('google.oauth2.service_account.Credentials.from_service_account_info', return_value=MagicMock())
 
 _p1.start()
 _p2.start()
-_p3.start()
 
 import producer_lambda  # noqa: E402  module initialises with mocks active
 
 _p1.stop()
 _p2.stop()
-_p3.stop()
