@@ -289,13 +289,17 @@ Prices are validated before insert:
 
 ### Lambda Unit Tests (`lambda/producer/tests/test_producer.py`)
 
-Coverage:
-- NBP fallback logic (weekends/holidays → `/last/1/`)
-- Price spike detection (> 50% deviation flagged)
-- Idempotency check (no duplicate insert when date exists)
-- PnL calculation correctness
-- DynamoDB scan mocked via `moto`
-- Steam/NBP HTTP calls mocked via `unittest.mock`
+Coverage (8 tests):
+1. NBP fallback — weekend/holiday 404 → `/last/1/` endpoint used
+2. Steam price zero volume → `price_flagged = True`
+3. Steam price spike > 50% deviation from 7-day median → `price_flagged = True`
+4. Steam price within threshold (49% deviation) → `price_flagged = False`
+5. Normal price, no median → `price_flagged = False` (only volume check)
+6. Buy event idempotency — existing `asset_id` in BQ → row skipped, no re-insert
+7. Missing `event_type` defaults to buy (backwards compatibility with old DynamoDB items)
+8. `get_steam_price` returns None (API failure) → price row skipped, handler continues
+
+HTTP calls mocked via `unittest.mock`. Module-level SSM + GCP credential init patched in `conftest.py` before import.
 
 ### Lambda Layer
 
