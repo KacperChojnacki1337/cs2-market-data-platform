@@ -17,6 +17,30 @@ on:
 
 jobs:
   # -----------------------------------------------------------------------
+  # Lambda unit tests — runs on every PR, no GCP credentials needed
+  # -----------------------------------------------------------------------
+  lambda-tests:
+    name: Lambda unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install pytest boto3 requests -r lambda/producer/requirements-dev.txt
+
+      - name: Run pytest
+        working-directory: lambda/producer
+        run: python -m pytest tests/ -v
+
+  # -----------------------------------------------------------------------
   # CI job: runs on every PR to main or develop
   # Uses *_dev datasets — never touches production data
   # -----------------------------------------------------------------------
