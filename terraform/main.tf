@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # 1. AWS: DynamoDB - Inventory (Source of Truth)
 # ==========================================
 resource "aws_dynamodb_table" "inventory_metadata" {
@@ -381,7 +381,7 @@ resource "aws_lambda_function" "steam_producer" {
   role          = aws_iam_role.lambda_exec_role.arn
   handler       = "producer_lambda.lambda_handler"
   runtime       = "python3.11"
-  timeout       = 60
+  timeout       = 300
   memory_size   = 256
 
   layers = [aws_lambda_layer_version.python_libs.arn]
@@ -404,7 +404,7 @@ resource "aws_lambda_function" "steam_producer" {
 
 resource "aws_cloudwatch_event_rule" "producer_schedule" {
   name                = "steam-producer-daily"
-  description         = "Triggers producer Lambda daily at 07:00 UTC — 1 hour before dbt run"
+  description         = "Triggers producer Lambda daily at 07:00 UTC â€” 1 hour before dbt run"
   schedule_expression = "cron(0 7 * * ? *)"
 }
 
@@ -456,7 +456,7 @@ resource "aws_cloudwatch_metric_alarm" "producer_errors" {
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   alarm_name          = "steam-producer-duration"
-  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (48s of 60s)"
+  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (240s of 300s)"
   namespace           = "AWS/Lambda"
   metric_name         = "Duration"
   dimensions = {
@@ -465,8 +465,9 @@ resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   statistic           = "Maximum"
   period              = 300
   evaluation_periods  = 1
-  threshold           = 48000
+  threshold           = 240000
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
+
