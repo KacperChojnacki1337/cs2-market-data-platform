@@ -196,3 +196,32 @@ def test_steam_api_failure_skips_price_row():
     body = _json.loads(result["body"])
     assert body["prices_written"] == 0
     assert body["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — Backfill mode: event with 'date' key uses that date, not today
+# ---------------------------------------------------------------------------
+
+def test_backfill_mode_uses_event_date():
+    item = _make_buy_item()
+    bq = _bq_client_mock()
+
+    captured_rows = []
+
+    def _capture_insert(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture_insert
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+                with patch("producer_lambda.get_nbp_rate", return_value=3.95):
+                    producer_lambda.lambda_handler({"date": "2026-01-15"}, None)
+
+    for _table, row in captured_rows:
+        ts = row.get("timestamp") or row.get("last_updated")
+        assert ts.startswith("2026-01-15"), (
+            f"Expected timestamp to start with '2026-01-15', got {ts!r}"
+        )

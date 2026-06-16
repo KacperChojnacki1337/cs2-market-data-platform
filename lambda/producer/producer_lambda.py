@@ -81,7 +81,15 @@ def get_nbp_rate(currency='USD', retries=3, backoff=2):
 
 def lambda_handler(event, context):
     request_id = context.aws_request_id if context else 'local'
-    current_ts = datetime.now(timezone.utc).isoformat()
+
+    # Backfill mode: event payload may carry a 'date' field (YYYY-MM-DD).
+    # Use noon UTC on that date so all BQ rows land in the correct day partition.
+    backfill_date = (event or {}).get('date')
+    if backfill_date:
+        current_ts = f"{backfill_date}T12:00:00+00:00"
+        print(f"BACKFILL_MODE | date={backfill_date} | request_id={request_id}")
+    else:
+        current_ts = datetime.now(timezone.utc).isoformat()
     run_date = current_ts[:10]
 
     print(f"INVOCATION_START | date={run_date} | request_id={request_id}")
