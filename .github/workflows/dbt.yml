@@ -140,6 +140,26 @@ jobs:
                 timeout_seconds: 300
           EOF
 
+      - name: Data freshness check
+        run: |
+          python3 - <<'EOF'
+          import sys
+          from google.cloud import bigquery
+          from google.oauth2 import service_account
+
+          creds = service_account.Credentials.from_service_account_file('/tmp/gcp_key.json')
+          client = bigquery.Client(project='steam-tracker-portfolio', credentials=creds)
+          result = list(client.query(
+              "SELECT COUNT(*) as cnt FROM `steam-tracker-portfolio.steam_raw.prices_history`"
+              " WHERE DATE(timestamp) = CURRENT_DATE()"
+          ).result())
+          cnt = result[0].cnt
+          if cnt == 0:
+              print("FRESHNESS_CHECK_FAILED: no price rows for today — Lambda may have failed, aborting dbt run")
+              sys.exit(1)
+          print(f"FRESHNESS_CHECK_OK: {cnt} price rows found for today")
+          EOF
+
       - name: dbt deps
         working-directory: dbt/steam_tracker
         run: dbt deps
