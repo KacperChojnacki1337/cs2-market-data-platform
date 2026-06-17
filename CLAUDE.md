@@ -335,7 +335,36 @@ If count = 0 â†’ workflow fails with alert, dbt does not run on stale data.
 
 ### Secret Rotation
 
-GCP service account key stored in SSM (`/steam-tracker/gcp-key`) should be rotated every 90 days. Rotation process: generate new key in GCP IAM â†’ update SSM parameter â†’ verify Lambda invocation succeeds â†’ delete old key.
+GCP service account key must be rotated every 90 days. **Next rotation due: 2026-09-15** (key created 2026-06-17).
+
+**Full rotation checklist:**
+
+1. **Generate new key** — GCP Console → IAM & Admin → Service Accounts → `terraform-deployer@steam-tracker-portfolio.iam.gserviceaccount.com` → Keys → Add Key → JSON → Download
+
+2. **Update SSM** (Lambda reads from here at runtime):
+   ```bash
+   aws ssm put-parameter \
+     --name "/steam-tracker/gcp-key" \
+     --type "SecureString" \
+     --value "$(cat new-key.json)" \
+     --overwrite \
+     --region eu-central-1
+   ```
+
+3. **Update GitHub Actions secret** — repo Settings → Secrets → Actions → `GCP_SA_KEY` → Update with contents of `new-key.json`
+
+4. **Verify Lambda works** with new key:
+   ```bash
+   aws lambda invoke \
+     --function-name steam_price_producer \
+     --region eu-central-1 \
+     response.json && cat response.json
+   ```
+   Check CloudWatch logs for `INVOCATION_END` — if it appears, new key is valid.
+
+5. **Delete old key** — GCP Console → IAM & Admin → Service Accounts → Keys → Delete the old key ID
+
+6. **Update next rotation date** in this file (`CLAUDE.md`) — set 90 days from today.
 
 ## Security Model
 
@@ -389,4 +418,5 @@ dbt run --target prod  # production (GitHub Actions only)
 - **Push to `main`** â€” runs `dbt run --target prod` + `dbt test` + `dbt docs generate`
 
 Dev datasets cost $0 at this scale â€” identical small data split across separate BigQuery datasets.
+
 
