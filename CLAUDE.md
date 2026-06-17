@@ -350,9 +350,11 @@ GCP service account key stored in SSM (`/steam-tracker/gcp-key`) should be rotat
 
 **Producer**: `DYNAMODB_TABLE`, `GCP_PROJECT_ID`, `BQ_DATASET_RAW`, `GCP_KEY_PARAM`
 
-## BigQuery Budget Alert
+## Budget Alerts
 
-Terraform-managed budget alert: email notification when GCP spend exceeds $5/month on the project.
+**GCP** — Terraform-managed `google_billing_budget`: email notification (via `google_monitoring_notification_channel`) at 25%, 50%, 100% of 25 PLN/month on the project. Requires `Billing Account Costs Manager` role on the billing account and `Monitoring Notification Channel Editor` role on the project for the service account.
+
+**AWS** — Terraform-managed `aws_budgets_budget`: email notification at 25%, 50%, 100% of $5/month covering Lambda + DynamoDB.
 
 ## Environments
 
