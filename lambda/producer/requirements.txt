@@ -1,4 +1,3 @@
 google-cloud-bigquery
 google-auth
-confluent-kafka
 requests

@@ -12,6 +12,10 @@ exchange_rate as (
     and to_currency = 'PLN'
 ),
 
+sold_items as (
+    select distinct item_id from {{ ref('stg_sales') }}
+),
+
 final as (
     select
         a.asset_sk,
@@ -47,6 +51,7 @@ final as (
     from assets a
     left join prices p on a.item_id = p.item_id
     left join exchange_rate r on 1 = 1
+    where a.item_id not in (select item_id from sold_items)
 )
 
 select * from final

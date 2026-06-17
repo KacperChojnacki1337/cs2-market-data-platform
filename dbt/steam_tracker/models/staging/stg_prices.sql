@@ -6,6 +6,7 @@ renamed as (
     select
         item_id,
         cast(price_usd as numeric)   as price_usd,
+        price_flagged,
         cast(timestamp as timestamp) as fetched_at
     from source
 )

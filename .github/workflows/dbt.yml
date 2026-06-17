@@ -6,15 +6,47 @@ on:
       - main
     paths:
       - 'dbt/**'
+  pull_request:
+    branches:
+      - main
+      - develop
   schedule:
-    # Runs daily at 08:00 UTC — after producer lambda collects data
+    # Runs daily at 08:00 UTC — 1 hour after producer Lambda collects data
     - cron: '0 8 * * *'
   workflow_dispatch:
-    # Manual trigger for debugging
 
 jobs:
-  dbt:
-    name: dbt run + test + docs
+  # -----------------------------------------------------------------------
+  # Lambda unit tests — runs on every PR, no GCP credentials needed
+  # -----------------------------------------------------------------------
+  lambda-tests:
+    name: Lambda unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install pytest boto3 requests -r lambda/producer/requirements-dev.txt
+
+      - name: Run pytest
+        working-directory: lambda/producer
+        run: python -m pytest tests/ -v
+
+  # -----------------------------------------------------------------------
+  # CI job: runs on every PR to main or develop
+  # Uses *_dev datasets — never touches production data
+  # -----------------------------------------------------------------------
+  dbt-ci:
+    name: dbt CI (dev datasets)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -30,21 +62,22 @@ jobs:
         run: pip install dbt-bigquery
 
       - name: Write GCP service account key
-        run: |
-          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/gcp_key.json
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: python3 -c "import os; open('/tmp/gcp_key.json','w').write(os.environ['GCP_SA_KEY'].lstrip('﻿'))"
 
       - name: Write dbt profiles
         run: |
           mkdir -p ~/.dbt
-          cat > ~/.dbt/profiles.yml << EOF
+          cat > ~/.dbt/profiles.yml << 'EOF'
           steam_tracker:
-            target: prod
+            target: dev
             outputs:
-              prod:
+              dev:
                 type: bigquery
                 method: service-account
                 project: steam-tracker-portfolio
-                dataset: steam_marts
+                dataset: steam_raw_dev
                 location: EU
                 keyfile: /tmp/gcp_key.json
                 threads: 4
@@ -55,13 +88,91 @@ jobs:
         working-directory: dbt/steam_tracker
         run: dbt deps
 
-      - name: dbt run
+      - name: dbt run (dev)
         working-directory: dbt/steam_tracker
-        run: dbt run
+        run: dbt run --target dev
 
-      - name: dbt test
+      - name: dbt test (dev)
         working-directory: dbt/steam_tracker
-        run: dbt test
+        run: dbt test --target dev
+
+  # -----------------------------------------------------------------------
+  # Prod job: runs on push to main (dbt/** changed), schedule, or manual
+  # Uses production datasets
+  # -----------------------------------------------------------------------
+  dbt-prod:
+    name: dbt prod run + docs
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt-bigquery
+        run: pip install dbt-bigquery
+
+      - name: Write GCP service account key
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: python3 -c "import os; open('/tmp/gcp_key.json','w').write(os.environ['GCP_SA_KEY'].lstrip('﻿'))"
+
+      - name: Write dbt profiles
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << 'EOF'
+          steam_tracker:
+            target: prod
+            outputs:
+              prod:
+                type: bigquery
+                method: service-account
+                project: steam-tracker-portfolio
+                dataset: steam_raw
+                location: EU
+                keyfile: /tmp/gcp_key.json
+                threads: 4
+                timeout_seconds: 300
+          EOF
+
+      - name: Data freshness check
+        run: |
+          python3 - <<'EOF'
+          import sys
+          from google.cloud import bigquery
+          from google.oauth2 import service_account
+
+          creds = service_account.Credentials.from_service_account_file('/tmp/gcp_key.json')
+          client = bigquery.Client(project='steam-tracker-portfolio', credentials=creds)
+          result = list(client.query(
+              "SELECT COUNT(*) as cnt FROM `steam-tracker-portfolio.steam_raw.prices_history`"
+              " WHERE DATE(timestamp) = CURRENT_DATE()"
+          ).result())
+          cnt = result[0].cnt
+          if cnt == 0:
+              print("FRESHNESS_CHECK_FAILED: no price rows for today — Lambda may have failed, aborting dbt run")
+              sys.exit(1)
+          print(f"FRESHNESS_CHECK_OK: {cnt} price rows found for today")
+          EOF
+
+      - name: dbt deps
+        working-directory: dbt/steam_tracker
+        run: dbt deps
+
+      - name: dbt run (prod)
+        working-directory: dbt/steam_tracker
+        run: dbt run --target prod
+
+      - name: dbt test (prod)
+        working-directory: dbt/steam_tracker
+        run: dbt test --target prod
 
       - name: dbt docs generate
         working-directory: dbt/steam_tracker
@@ -74,4 +185,9 @@ jobs:
           path: dbt/steam_tracker/target/
           retention-days: 7
 
-
+      - name: Deploy dbt docs to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dbt/steam_tracker/target
+          publish_branch: gh-pages

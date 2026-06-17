@@ -1,11 +1,4 @@
-# ==========================================
-# Locals
-# ==========================================
-locals {
-  redpanda_bootstrap = "d6o1vn7jkk1fce8gpuq0.any.eu-central-1.mpx.prd.cloud.redpanda.com:9092"
-}
-
-# ==========================================
+﻿# ==========================================
 # 1. AWS: DynamoDB - Inventory (Source of Truth)
 # ==========================================
 resource "aws_dynamodb_table" "inventory_metadata" {
@@ -33,11 +26,24 @@ resource "aws_dynamodb_table" "inventory_metadata" {
 # 2. GCP: BigQuery - Medallion Architecture
 # ==========================================
 
+locals {
+  sa_email = jsondecode(file(var.gcp_credentials_file)).client_email
+}
+
 # --- Bronze Layer: Raw Data Ingestion ---
 resource "google_bigquery_dataset" "raw_dataset" {
   dataset_id                 = "steam_raw"
   friendly_name              = "Steam Raw Data"
   description                = "Bronze Layer: Raw ingestion from AWS and Steam API"
+  location                   = "EU"
+  delete_contents_on_destroy = false
+}
+
+# --- Silver Layer: Staging & Intermediate (dbt views) ---
+resource "google_bigquery_dataset" "staging_dataset" {
+  dataset_id                 = "steam_staging"
+  friendly_name              = "Steam Staging"
+  description                = "Silver Layer: Typed views and intermediate models via dbt"
   location                   = "EU"
   delete_contents_on_destroy = false
 }
@@ -51,11 +57,66 @@ resource "google_bigquery_dataset" "marts_dataset" {
   delete_contents_on_destroy = false
 }
 
+# --- Dev Datasets (mirror of prod, for local dbt development) ---
+resource "google_bigquery_dataset" "raw_dataset_dev" {
+  dataset_id                 = "steam_raw_dev"
+  friendly_name              = "Steam Raw Data (Dev)"
+  description                = "Bronze Layer Dev"
+  location                   = "EU"
+  delete_contents_on_destroy = true
+}
+
+resource "google_bigquery_dataset" "staging_dataset_dev" {
+  dataset_id                 = "steam_staging_dev"
+  friendly_name              = "Steam Staging (Dev)"
+  description                = "Silver Layer Dev"
+  location                   = "EU"
+  delete_contents_on_destroy = true
+}
+
+resource "google_bigquery_dataset" "marts_dataset_dev" {
+  dataset_id                 = "steam_marts_dev"
+  friendly_name              = "Steam Analytics Marts (Dev)"
+  description                = "Gold Layer Dev"
+  location                   = "EU"
+  delete_contents_on_destroy = true
+}
+
+# --- IAM: Service Account access to new datasets ---
+resource "google_bigquery_dataset_iam_member" "staging_sa_editor" {
+  dataset_id = google_bigquery_dataset.staging_dataset.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "raw_dev_sa_editor" {
+  dataset_id = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "staging_dev_sa_editor" {
+  dataset_id = google_bigquery_dataset.staging_dataset_dev.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
+resource "google_bigquery_dataset_iam_member" "marts_dev_sa_editor" {
+  dataset_id = google_bigquery_dataset.marts_dataset_dev.dataset_id
+  role       = "roles/bigquery.dataEditor"
+  member     = "serviceAccount:${local.sa_email}"
+}
+
 # --- Raw Table: Assets History (Bronze) ---
 resource "google_bigquery_table" "raw_assets" {
   dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
   table_id            = "assets_history"
   deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "last_updated"
+  }
 
   schema = <<EOF
 [
@@ -78,11 +139,17 @@ resource "google_bigquery_table" "raw_prices" {
   table_id            = "prices_history"
   deletion_protection = false
 
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
   schema = <<EOF
 [
-  {"name": "item_id",   "type": "STRING",    "mode": "REQUIRED"},
-  {"name": "price_usd", "type": "FLOAT",     "mode": "NULLABLE"},
-  {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  {"name": "item_id",       "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "price_usd",     "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "price_flagged", "type": "BOOLEAN",   "mode": "NULLABLE", "description": "TRUE if price is anomalous: zero volume or >50% deviation from 7-day median"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }
@@ -92,6 +159,11 @@ resource "google_bigquery_table" "raw_exchange_rates" {
   dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
   table_id            = "exchange_rates"
   deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
 
   schema = <<EOF
 [
@@ -104,24 +176,127 @@ resource "google_bigquery_table" "raw_exchange_rates" {
 EOF
 }
 
-# ==========================================
-# 3. IAM: Security and Permissions
-# ==========================================
+# --- Raw Table: Sales History (Bronze) ---
+resource "google_bigquery_table" "raw_sales" {
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "sales_history"
+  deletion_protection = false
 
-# Policy allowing the Consumer Role to read Redpanda credentials from Secrets Manager
-resource "aws_iam_role_policy" "consumer_secrets_policy" {
-  name = "consumer_secrets_policy"
-  role = aws_iam_role.consumer_exec_role.id
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action   = "secretsmanager:GetSecretValue"
-      Effect   = "Allow"
-      Resource = aws_secretsmanager_secret.redpanda_creds.arn
-    }]
-  })
+  schema = <<EOF
+[
+  {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "sell_price",       "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "sell_currency",    "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "sell_date",        "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "category",         "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "purchase_channel", "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",         "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "timestamp",        "type": "TIMESTAMP", "mode": "REQUIRED"}
+]
+EOF
 }
+
+# --- Dev Tables: mirrors of prod schema, empty (for CI dbt validation) ---
+resource "google_bigquery_table" "dev_assets" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "assets_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "last_updated"
+  }
+
+  schema = <<EOF
+[
+  {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "buy_date",         "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "buy_price",        "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "buy_currency",     "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",         "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "category",         "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "purchase_channel", "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "last_updated",     "type": "TIMESTAMP", "mode": "REQUIRED"}
+]
+EOF
+}
+
+resource "google_bigquery_table" "dev_prices" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "prices_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",       "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "price_usd",     "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "price_flagged", "type": "BOOLEAN",   "mode": "NULLABLE", "description": "TRUE if price is anomalous: zero volume or >50% deviation from 7-day median"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
+]
+EOF
+}
+
+resource "google_bigquery_table" "dev_exchange_rates" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "exchange_rates"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "from_currency", "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "to_currency",   "type": "STRING",    "mode": "REQUIRED"},
+  {"name": "rate",          "type": "FLOAT",     "mode": "REQUIRED"},
+  {"name": "source",        "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
+]
+EOF
+}
+
+resource "google_bigquery_table" "dev_sales" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "sales_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "sell_price",       "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "sell_currency",    "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "sell_date",        "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "category",         "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "purchase_channel", "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",         "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "timestamp",        "type": "TIMESTAMP", "mode": "REQUIRED"}
+]
+EOF
+}
+
+# ==========================================
+# 3. IAM: Producer Lambda Permissions
+# ==========================================
 
 resource "aws_iam_role" "lambda_exec_role" {
   name = "steam_tracker_lambda_role"
@@ -178,110 +353,8 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
-resource "aws_secretsmanager_secret" "redpanda_creds" {
-  name = "steam-tracker/redpanda-creds-v2"
-}
-
-resource "aws_secretsmanager_secret_version" "redpanda_creds_val" {
-  secret_id     = aws_secretsmanager_secret.redpanda_creds.id
-  secret_string = jsonencode({
-    username = "lambda-producer"
-    password = var.redpanda_password
-  })
-}
-
-resource "aws_iam_role" "consumer_exec_role" {
-  name = "steam_tracker_consumer_role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = { Service = "lambda.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "consumer_basic" {
-  role       = aws_iam_role.consumer_exec_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role_policy" "consumer_ssm_policy" {
-  name = "consumer_ssm_policy"
-  role = aws_iam_role.consumer_exec_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action   = "ssm:GetParameter"
-      Effect   = "Allow"
-      Resource = "arn:aws:ssm:eu-central-1:*:parameter/steam-tracker/*"
-    }]
-  })
-}
-
 # ==========================================
-# 4. Redpanda: Event Source Mappings
-# ==========================================
-
-# Trigger for Inventory Events
-resource "aws_lambda_event_source_mapping" "redpanda_inventory_trigger" {
-  function_name     = aws_lambda_function.steam_consumer.arn
-  topics            = ["db-inventory-events"]
-  starting_position = "LATEST"
-
-  self_managed_event_source {
-    endpoints = {
-      KAFKA_BOOTSTRAP_SERVERS = local.redpanda_bootstrap
-    }
-  }
-
-  source_access_configuration {
-    type = "SASL_SCRAM_256_AUTH"
-    uri  = aws_secretsmanager_secret.redpanda_creds.arn
-  }
-}
-
-# Trigger for Market Price Events
-resource "aws_lambda_event_source_mapping" "redpanda_prices_trigger" {
-  function_name     = aws_lambda_function.steam_consumer.arn
-  topics            = ["market-price-events"]
-  starting_position = "LATEST"
-
-  self_managed_event_source {
-    endpoints = {
-      KAFKA_BOOTSTRAP_SERVERS = local.redpanda_bootstrap
-    }
-  }
-
-  source_access_configuration {
-    type = "SASL_SCRAM_256_AUTH"
-    uri  = aws_secretsmanager_secret.redpanda_creds.arn
-  }
-}
-
-# Trigger for Exchange Rate Events
-resource "aws_lambda_event_source_mapping" "redpanda_exchange_rate_trigger" {
-  function_name     = aws_lambda_function.steam_consumer.arn
-  topics            = ["exchange-rate-events"]
-  starting_position = "LATEST"
-
-  self_managed_event_source {
-    endpoints = {
-      KAFKA_BOOTSTRAP_SERVERS = local.redpanda_bootstrap
-    }
-  }
-
-  source_access_configuration {
-    type = "SASL_SCRAM_256_AUTH"
-    uri  = aws_secretsmanager_secret.redpanda_creds.arn
-  }
-}
-
-# ==========================================
-# 5. Lambda: Packaging and Deployment
+# 4. Lambda: Packaging and Deployment
 # ==========================================
 
 data "archive_file" "lambda_code_zip" {
@@ -308,7 +381,7 @@ resource "aws_lambda_function" "steam_producer" {
   role          = aws_iam_role.lambda_exec_role.arn
   handler       = "producer_lambda.lambda_handler"
   runtime       = "python3.11"
-  timeout       = 60
+  timeout       = 300
   memory_size   = 256
 
   layers = [aws_lambda_layer_version.python_libs.arn]
@@ -317,74 +390,21 @@ resource "aws_lambda_function" "steam_producer" {
 
   environment {
     variables = {
-      # Producer only needs DynamoDB and Redpanda — no GCP access required
-      DYNAMODB_TABLE     = aws_dynamodb_table.inventory_metadata.name
-      RP_BOOTSTRAP_PARAM = aws_ssm_parameter.redpanda_bootstrap.name
-      RP_USER_PARAM      = aws_ssm_parameter.redpanda_user.name
-      RP_PASS_PARAM      = aws_ssm_parameter.redpanda_pass.name
-    }
-  }
-}
-
-# --- Redpanda Connection Details in SSM ---
-
-resource "aws_ssm_parameter" "redpanda_bootstrap" {
-  name  = "/steam-tracker/redpanda-bootstrap"
-  type  = "SecureString"
-  value = local.redpanda_bootstrap
-}
-
-resource "aws_ssm_parameter" "redpanda_user" {
-  name  = "/steam-tracker/redpanda-user"
-  type  = "SecureString"
-  value = "lambda-producer"
-}
-
-resource "aws_ssm_parameter" "redpanda_pass" {
-  name  = "/steam-tracker/redpanda-pass"
-  type  = "SecureString"
-  value = var.redpanda_password
-}
-
-# ==========================================
-# 6. Consumer Lambda: From Redpanda to BigQuery
-# ==========================================
-
-data "archive_file" "consumer_zip" {
-  type        = "zip"
-  source_file = "../lambda/consumer/consumer_lambda.py"
-  output_path = "consumer_lambda.zip"
-}
-
-resource "aws_lambda_function" "steam_consumer" {
-  filename      = data.archive_file.consumer_zip.output_path
-  function_name = "steam_bq_consumer"
-  role          = aws_iam_role.consumer_exec_role.arn
-  handler       = "consumer_lambda.lambda_handler"
-  runtime       = "python3.11"
-  timeout       = 30
-  memory_size   = 256
-
-  layers = [aws_lambda_layer_version.python_libs.arn]
-
-  source_code_hash = data.archive_file.consumer_zip.output_base64sha256
-
-  environment {
-    variables = {
-      GCP_PROJECT_ID = "steam-tracker-portfolio"
-      BQ_DATASET     = google_bigquery_dataset.raw_dataset.dataset_id
+      DYNAMODB_TABLE = aws_dynamodb_table.inventory_metadata.name
+      GCP_PROJECT_ID = var.gcp_project_id
+      BQ_DATASET_RAW = "steam_raw"
       GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
     }
   }
 }
 
 # ==========================================
-# 7. EventBridge: Producer Schedule
+# 5. EventBridge: Producer Schedule
 # ==========================================
 
 resource "aws_cloudwatch_event_rule" "producer_schedule" {
   name                = "steam-producer-daily"
-  description         = "Triggers producer Lambda daily at 07:00 UTC — 1 hour before dbt run"
+  description         = "Triggers producer Lambda daily at 07:00 UTC â€” 1 hour before dbt run"
   schedule_expression = "cron(0 7 * * ? *)"
 }
 
@@ -402,7 +422,7 @@ resource "aws_lambda_permission" "allow_eventbridge" {
 }
 
 # ==========================================
-# 8. CloudWatch: Alarms + SNS Notifications
+# 6. CloudWatch: Alarms + SNS Notifications
 # ==========================================
 
 resource "aws_sns_topic" "alerts" {
@@ -433,10 +453,96 @@ resource "aws_cloudwatch_metric_alarm" "producer_errors" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
+# ==========================================
+# 7. Budget Alerts — GCP and AWS
+# ==========================================
+
+# --- GCP: Email notification channel ---
+resource "google_monitoring_notification_channel" "email" {
+  display_name = "Steam Tracker Email"
+  type         = "email"
+  project      = var.gcp_project_id
+  labels = {
+    email_address = var.alert_email
+  }
+}
+
+# --- GCP: Monthly budget $5 with alerts at 25%, 50%, 100% ---
+resource "google_billing_budget" "monthly_budget" {
+  billing_account = var.billing_account_id
+  display_name    = "Steam Tracker Monthly Budget"
+
+  budget_filter {
+    projects = ["projects/${var.gcp_project_number}"]
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "PLN"
+      units         = "25"
+    }
+  }
+
+  threshold_rules {
+    threshold_percent = 0.25
+  }
+  threshold_rules {
+    threshold_percent = 0.5
+  }
+  threshold_rules {
+    threshold_percent = 1.0
+  }
+
+  all_updates_rule {
+    monitoring_notification_channels = [
+      google_monitoring_notification_channel.email.id
+    ]
+    disable_default_iam_recipients = false
+  }
+}
+
+# --- AWS: Monthly budget $5 covering Lambda + DynamoDB ---
+resource "aws_budgets_budget" "monthly_budget" {
+  name         = "steam-tracker-monthly-budget"
+  budget_type  = "COST"
+  limit_amount = "5"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "Service"
+    values = ["AWS Lambda", "Amazon DynamoDB"]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 25
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 50
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+}
+
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   alarm_name          = "steam-producer-duration"
-  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (48s of 60s)"
+  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (240s of 300s)"
   namespace           = "AWS/Lambda"
   metric_name         = "Duration"
   dimensions = {
@@ -445,44 +551,9 @@ resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   statistic           = "Maximum"
   period              = 300
   evaluation_periods  = 1
-  threshold           = 48000
+  threshold           = 240000
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
-# --- Consumer Lambda: Errors ---
-resource "aws_cloudwatch_metric_alarm" "consumer_errors" {
-  alarm_name          = "steam-consumer-errors"
-  alarm_description   = "Consumer Lambda is throwing errors"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Errors"
-  dimensions = {
-    FunctionName = aws_lambda_function.steam_consumer.function_name
-  }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-}
-
-# --- Consumer Lambda: Duration (timeout risk) ---
-resource "aws_cloudwatch_metric_alarm" "consumer_duration" {
-  alarm_name          = "steam-consumer-duration"
-  alarm_description   = "Consumer Lambda duration exceeds 80% of timeout (24s of 30s)"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Duration"
-  dimensions = {
-    FunctionName = aws_lambda_function.steam_consumer.function_name
-  }
-  statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 24000
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alerts.arn]
-}
