@@ -24,3 +24,13 @@ variable "alert_email" {
   description = "Email address for CloudWatch alarm notifications"
   type        = string
 }
+
+variable "billing_account_id" {
+  description = "GCP Billing Account ID (format: XXXXXX-XXXXXX-XXXXXX)"
+  type        = string
+}
+
+variable "gcp_project_number" {
+  description = "GCP Project Number (numeric, found in GCP Console > Home > Project info)"
+  type        = string
+}

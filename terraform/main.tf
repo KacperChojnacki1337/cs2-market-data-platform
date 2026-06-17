@@ -453,6 +453,92 @@ resource "aws_cloudwatch_metric_alarm" "producer_errors" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
+# ==========================================
+# 7. Budget Alerts — GCP and AWS
+# ==========================================
+
+# --- GCP: Email notification channel ---
+resource "google_monitoring_notification_channel" "email" {
+  display_name = "Steam Tracker Email"
+  type         = "email"
+  project      = var.gcp_project_id
+  labels = {
+    email_address = var.alert_email
+  }
+}
+
+# --- GCP: Monthly budget $5 with alerts at 25%, 50%, 100% ---
+resource "google_billing_budget" "monthly_budget" {
+  billing_account = var.billing_account_id
+  display_name    = "Steam Tracker Monthly Budget"
+
+  budget_filter {
+    projects = ["projects/${var.gcp_project_number}"]
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "PLN"
+      units         = "25"
+    }
+  }
+
+  threshold_rules {
+    threshold_percent = 0.25
+  }
+  threshold_rules {
+    threshold_percent = 0.5
+  }
+  threshold_rules {
+    threshold_percent = 1.0
+  }
+
+  all_updates_rule {
+    monitoring_notification_channels = [
+      google_monitoring_notification_channel.email.id
+    ]
+    disable_default_iam_recipients = false
+  }
+}
+
+# --- AWS: Monthly budget $5 covering Lambda + DynamoDB ---
+resource "aws_budgets_budget" "monthly_budget" {
+  name         = "steam-tracker-monthly-budget"
+  budget_type  = "COST"
+  limit_amount = "5"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "Service"
+    values = ["AWS Lambda", "Amazon DynamoDB"]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 25
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 50
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.alert_email]
+  }
+}
+
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   alarm_name          = "steam-producer-duration"
