@@ -153,19 +153,30 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"Warning: could not fetch 7-day medians ({e}), spike detection disabled.")
 
-    # 4. Fetch NBP rate once per invocation
-    usd_pln_rate = get_nbp_rate('USD')
-    if usd_pln_rate is not None:
-        exchange_rate_rows.append({
-            "from_currency": "USD",
-            "to_currency": "PLN",
-            "rate": usd_pln_rate,
-            "source": "NBP",
-            "timestamp": current_ts
-        })
-        print(f"NBP USD/PLN rate: {usd_pln_rate}")
-    else:
-        print("Could not fetch NBP rate, skipping exchange rate row.")
+    # 4. Fetch NBP rate once per invocation — skip if already recorded for this date
+    existing_rate_for_date = False
+    try:
+        rate_check = f"SELECT COUNT(*) as cnt FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.exchange_rates` WHERE DATE(timestamp) = '{run_date}'"
+        rate_rows = list(client.query(rate_check).result())
+        existing_rate_for_date = rate_rows[0].cnt > 0
+        if existing_rate_for_date:
+            print(f"EXCHANGE_RATE_SKIP | date={run_date} | rate already recorded for today")
+    except Exception as e:
+        print(f"Warning: could not check existing exchange rate ({e}), will fetch and insert.")
+
+    if not existing_rate_for_date:
+        usd_pln_rate = get_nbp_rate('USD')
+        if usd_pln_rate is not None:
+            exchange_rate_rows.append({
+                "from_currency": "USD",
+                "to_currency": "PLN",
+                "rate": usd_pln_rate,
+                "source": "NBP",
+                "timestamp": current_ts
+            })
+            print(f"NBP USD/PLN rate: {usd_pln_rate}")
+        else:
+            print("Could not fetch NBP rate, skipping exchange rate row.")
 
     for item in items:
         item_id = item['item_id']
