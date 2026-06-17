@@ -104,6 +104,8 @@ jobs:
     name: dbt prod run + docs
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -182,3 +184,10 @@ jobs:
           name: dbt-docs
           path: dbt/steam_tracker/target/
           retention-days: 7
+
+      - name: Deploy dbt docs to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dbt/steam_tracker/target
+          publish_branch: gh-pages
