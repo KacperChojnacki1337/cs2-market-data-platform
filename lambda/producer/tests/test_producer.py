@@ -19,7 +19,7 @@ def _steam_response(price: str, volume: str) -> MagicMock:
     return resp
 
 
-def _bq_client_mock(existing_asset_ids=None, existing_sell_ids=None, existing_price_rows=0):
+def _bq_client_mock(existing_asset_ids=None, existing_sell_ids=None, existing_price_rows=0, existing_exchange_rate_rows=0):
     client = MagicMock()
 
     def _query_side_effect(sql):
@@ -30,6 +30,8 @@ def _bq_client_mock(existing_asset_ids=None, existing_sell_ids=None, existing_pr
             result.result.return_value = [MagicMock(asset_id=s) for s in (existing_sell_ids or [])]
         elif "prices_history" in sql and "COUNT" in sql:
             result.result.return_value = [MagicMock(cnt=existing_price_rows)]
+        elif "exchange_rates" in sql and "COUNT" in sql:
+            result.result.return_value = [MagicMock(cnt=existing_exchange_rate_rows)]
         elif "APPROX_QUANTILES" in sql:
             result.result.return_value = []
         else:
@@ -225,3 +227,22 @@ def test_backfill_mode_uses_event_date():
         assert ts.startswith("2026-01-15"), (
             f"Expected timestamp to start with '2026-01-15', got {ts!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — Exchange rate idempotency: rate already exists for today → skip insert
+# ---------------------------------------------------------------------------
+
+def test_exchange_rate_idempotency_skips_existing():
+    item = _make_buy_item()
+    bq = _bq_client_mock(existing_exchange_rate_rows=1)
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+                with patch("producer_lambda.get_nbp_rate", return_value=3.95) as mock_nbp:
+                    producer_lambda.lambda_handler({}, None)
+
+    insert_calls = [str(c) for c in bq.insert_rows_json.call_args_list]
+    assert not any("exchange_rates" in c for c in insert_calls)
+    mock_nbp.assert_not_called()
