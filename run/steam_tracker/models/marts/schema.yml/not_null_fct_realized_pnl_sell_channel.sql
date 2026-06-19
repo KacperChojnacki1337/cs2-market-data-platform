@@ -13,9 +13,9 @@
 
 
 
-select sell_price_pln
+select sell_channel
 from `steam-tracker-portfolio`.`steam_marts`.`fct_realized_pnl`
-where sell_price_pln is null
+where sell_channel is null
 
 
 

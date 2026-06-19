@@ -4,8 +4,8 @@
 
 
 
-select sell_price_pln
+select fee_pct
 from `steam-tracker-portfolio`.`steam_marts`.`fct_realized_pnl`
-where sell_price_pln is null
+where fee_pct is null
 
 
