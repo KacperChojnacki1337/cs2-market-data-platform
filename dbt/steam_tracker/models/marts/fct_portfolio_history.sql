@@ -1,4 +1,4 @@
-﻿{{ config(
+{{ config(
     materialized='incremental',
     unique_key='snapshot_date',
     partition_by={'field': 'snapshot_date', 'data_type': 'date'}
