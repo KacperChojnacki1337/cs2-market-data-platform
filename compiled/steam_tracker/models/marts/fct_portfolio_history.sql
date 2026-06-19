@@ -54,7 +54,7 @@ select
     r.usd_pln_rate
 from price_dates pd
 join daily_prices              p on pd.snapshot_date = p.price_date
-join `steam-tracker-portfolio`.`steam_staging`.`stg_assets`   a on p.item_id        = a.item_id
+join `steam-tracker-portfolio`.`steam_marts`.`dim_assets`   a on p.item_id        = a.item_id
 join daily_rates               r on pd.snapshot_date = r.rate_date
 left join sales             sold on a.item_id        = sold.item_id
     and sold.sell_date <= pd.snapshot_date
