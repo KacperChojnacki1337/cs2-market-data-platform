@@ -189,15 +189,15 @@ resource "google_bigquery_table" "raw_sales" {
 
   schema = <<EOF
 [
-  {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
-  {"name": "item_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
-  {"name": "sell_price",       "type": "FLOAT",     "mode": "NULLABLE"},
-  {"name": "sell_currency",    "type": "STRING",    "mode": "NULLABLE"},
-  {"name": "sell_date",        "type": "DATE",      "mode": "NULLABLE"},
-  {"name": "category",         "type": "STRING",    "mode": "NULLABLE"},
-  {"name": "purchase_channel", "type": "STRING",    "mode": "NULLABLE"},
-  {"name": "quantity",         "type": "INTEGER",   "mode": "NULLABLE"},
-  {"name": "timestamp",        "type": "TIMESTAMP", "mode": "REQUIRED"}
+  {"name": "asset_id",      "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",       "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "sell_price",    "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "sell_currency", "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "sell_date",     "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "sell_channel",  "type": "STRING",    "mode": "NULLABLE", "description": "Platform used for sale (Steam, CSFloat, Skinport) — drives fee_pct in dbt"},
+  {"name": "category",      "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",      "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }
@@ -281,15 +281,15 @@ resource "google_bigquery_table" "dev_sales" {
 
   schema = <<EOF
 [
-  {"name": "asset_id",         "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
-  {"name": "item_id",          "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
-  {"name": "sell_price",       "type": "FLOAT",     "mode": "NULLABLE"},
-  {"name": "sell_currency",    "type": "STRING",    "mode": "NULLABLE"},
-  {"name": "sell_date",        "type": "DATE",      "mode": "NULLABLE"},
-  {"name": "category",         "type": "STRING",    "mode": "NULLABLE"},
-  {"name": "purchase_channel", "type": "STRING",    "mode": "NULLABLE"},
-  {"name": "quantity",         "type": "INTEGER",   "mode": "NULLABLE"},
-  {"name": "timestamp",        "type": "TIMESTAMP", "mode": "REQUIRED"}
+  {"name": "asset_id",      "type": "STRING",    "mode": "REQUIRED", "description": "Source Key (DynamoDB UUID)"},
+  {"name": "item_id",       "type": "STRING",    "mode": "REQUIRED", "description": "Natural Key - skin market name"},
+  {"name": "sell_price",    "type": "FLOAT",     "mode": "NULLABLE"},
+  {"name": "sell_currency", "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "sell_date",     "type": "DATE",      "mode": "NULLABLE"},
+  {"name": "sell_channel",  "type": "STRING",    "mode": "NULLABLE", "description": "Platform used for sale (Steam, CSFloat, Skinport) — drives fee_pct in dbt"},
+  {"name": "category",      "type": "STRING",    "mode": "NULLABLE"},
+  {"name": "quantity",      "type": "INTEGER",   "mode": "NULLABLE"},
+  {"name": "timestamp",     "type": "TIMESTAMP", "mode": "REQUIRED"}
 ]
 EOF
 }
