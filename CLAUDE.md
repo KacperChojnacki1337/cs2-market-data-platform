@@ -209,8 +209,11 @@ aws dynamodb put-item \
     "sell_price": {"N": "180.00"},
     "sell_currency": {"S": "PLN"},
     "sell_date": {"S": "2026-03-01"},
+    "sell_channel": {"S": "CSFloat"},
     "updated_at": {"S": "2026-03-01T00:00:00Z"}
   }'
+# sell_channel values: "Steam" (15% fee), "CSFloat" (2%), "Skinport" (5%), "Unknown" (0%)
+# sell_price must always be in PLN (convert manually if platform pays in USD)
 ```
 
 ### Storing GCP Service Account Key in SSM
@@ -236,7 +239,7 @@ All tables partitioned by `DATE(timestamp)`.
 
 **Silver** â€” `steam_staging` dataset (views, dbt staging + intermediate):
 - `stg_assets` â€” type casts, uppercases `buy_currency`
-- `stg_sales` â€” type casts, uppercases `sell_currency`, renames `timestamp` â†’ `sold_at`
+- `stg_sales` â€” type casts, uppercases `sell_currency`, adds `sell_channel` with `COALESCE(..., ‘Unknown’)`, renames `timestamp` â†’ `sold_at`
 - `stg_prices` â€” casts price, renames `timestamp` â†’ `fetched_at`; `price_flagged` column planned in Issue #8
 - `stg_exchange_rates` â€” renames `source` â†’ `rate_source`, `timestamp` â†’ `fetched_at`
 - `int_latest_prices` â€” latest Steam price per `item_id` using `ROW_NUMBER()`
@@ -250,13 +253,20 @@ All tables partitioned by `DATE(timestamp)`.
   - `pnl_per_unit_pln = (price_usd Ă— usd_pln_rate) - buy_price_pln`
   - `pnl_total_pln = pnl_per_unit_pln Ă— quantity`
   - `pnl_pct = (pnl_per_unit_pln / buy_price_pln) Ă— 100`
+  - `net_value_steam_usd/pln = current_value Ă— 0.85` (estimated value after Steam 15% fee)
+  - `net_pnl_steam_pln = net_value_steam_pln - buy_price_pln`
+  - `net_pnl_pct_steam = (net_pnl_steam_pln / buy_price_pln) Ă— 100`
 - `fct_portfolio_history` â€” daily portfolio value snapshots (incremental, partitioned by `snapshot_date`):
   - Joins `stg_prices` Ă— `stg_assets` Ă— `stg_exchange_rates` by date
   - `portfolio_value_usd/pln`, `total_cost_pln`, `unrealized_pnl_pln/pct`, `active_positions`
   - Enables time-series charts in Looker Studio; sold positions excluded via time-aware LEFT JOIN anti-join (`sell_date <= snapshot_date`)
 - `fct_realized_pnl` â€” realized PnL on closed positions:
   - Joins `dim_assets` Ă— `stg_sales` by `item_id`
-  - `realized_pnl_pln = sell_price_pln - buy_price_pln`
+  - `fee_pct` derived from `sell_channel`: Steam=15%, CSFloat=2%, Skinport=5%, Unknown=0%
+  - `gross_sell_price_pln` â€” sell price before fee
+  - `fee_amount_pln = gross_sell_price_pln Ă— fee_pct / 100`
+  - `net_sell_price_pln = gross_sell_price_pln Ă— (1 - fee_pct / 100)`
+  - `realized_pnl_pln = net_sell_price_pln - buy_price_pln`
   - `realized_pnl_pct = (realized_pnl_pln / buy_price_pln) Ă— 100`
   - `holding_period_days = sell_date - buy_date`
 

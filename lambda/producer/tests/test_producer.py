@@ -57,7 +57,7 @@ def _make_buy_item(asset_id="uuid-buy-1", item_id="AWP | Test"):
     }
 
 
-def _make_sell_item(asset_id="uuid-sell-1", item_id="AWP | Test"):
+def _make_sell_item(asset_id="uuid-sell-1", item_id="AWP | Test", sell_channel="Steam"):
     return {
         "asset_id": asset_id,
         "item_id": item_id,
@@ -65,9 +65,9 @@ def _make_sell_item(asset_id="uuid-sell-1", item_id="AWP | Test"):
         "sell_price": Decimal("150.00"),
         "sell_currency": "PLN",
         "sell_date": "2026-06-01",
+        "sell_channel": sell_channel,
         "quantity": Decimal("1"),
         "category": "Skin",
-        "purchase_channel": "CSFloat",
     }
 
 
@@ -246,3 +246,30 @@ def test_exchange_rate_idempotency_skips_existing():
     insert_calls = [str(c) for c in bq.insert_rows_json.call_args_list]
     assert not any("exchange_rates" in c for c in insert_calls)
     mock_nbp.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — Sell event: sell_channel written to sales row, not purchase_channel
+# ---------------------------------------------------------------------------
+
+def test_sell_event_writes_sell_channel():
+    sell_item = _make_sell_item(sell_channel="CSFloat")
+    bq = _bq_client_mock()
+
+    captured_rows = []
+
+    def _capture_insert(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture_insert
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [sell_item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_nbp_rate", return_value=3.95):
+                producer_lambda.lambda_handler({}, None)
+
+    sales_rows = [row for table, row in captured_rows if "sales_history" in table]
+    assert len(sales_rows) == 1
+    assert sales_rows[0]["sell_channel"] == "CSFloat"
+    assert "purchase_channel" not in sales_rows[0]

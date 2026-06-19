@@ -222,8 +222,8 @@ def lambda_handler(event, context):
                     "sell_price": float(item.get('sell_price', 0)),
                     "sell_currency": item.get('sell_currency', 'PLN'),
                     "sell_date": item.get('sell_date'),
+                    "sell_channel": item.get('sell_channel', 'Unknown'),
                     "category": item.get('category', 'Skin'),
-                    "purchase_channel": item.get('purchase_channel', 'Unknown'),
                     "quantity": int(item.get('quantity', 1)),
                     "timestamp": current_ts
                 })
