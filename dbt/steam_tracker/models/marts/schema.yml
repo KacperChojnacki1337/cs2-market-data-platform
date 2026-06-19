@@ -45,6 +45,9 @@ models:
       - name: item_id
         tests:
           - not_null
+          - relationships:
+              to: ref('dim_assets')
+              field: item_id
       - name: buy_price_pln
         tests:
           - not_null
