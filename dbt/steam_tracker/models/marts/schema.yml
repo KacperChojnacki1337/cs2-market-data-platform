@@ -17,7 +17,7 @@ models:
           - not_null
 
   - name: fct_portfolio
-    description: "Portfolio fact table — current value and unrealized PnL per asset"
+    description: "Portfolio fact table — current value, unrealized PnL, and Steam net value per active position"
     columns:
       - name: asset_sk
         tests:
@@ -29,9 +29,15 @@ models:
       - name: usd_pln_rate
         tests:
           - not_null
+      - name: net_value_steam_pln
+        description: "Estimated net value if sold on Steam today (gross × 0.85, after 15% Steam fee)"
+        tests:
+          - not_null
+      - name: net_pnl_steam_pln
+        description: "Estimated net PnL if sold on Steam today (net_value_steam_pln - buy_price_pln)"
 
   - name: fct_realized_pnl
-    description: "Realized PnL on closed positions — joins buy events with matching sell events by item_id"
+    description: "Realized PnL on closed positions — fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 5%)"
     columns:
       - name: buy_asset_id
         tests:
@@ -42,13 +48,29 @@ models:
       - name: buy_price_pln
         tests:
           - not_null
-      - name: sell_price_pln
+      - name: gross_sell_price_pln
+        description: "Sell price before platform fee deduction"
+        tests:
+          - not_null
+      - name: fee_pct
+        description: "Platform fee % derived from sell_channel (Steam=15, CSFloat=2, Skinport=5)"
+        tests:
+          - not_null
+      - name: fee_amount_pln
+        description: "Fee in PLN (gross_sell_price_pln × fee_pct / 100)"
+      - name: net_sell_price_pln
+        description: "Sell price after platform fee (gross × (1 - fee_pct/100))"
         tests:
           - not_null
       - name: realized_pnl_pln
+        description: "Net realized profit (net_sell_price_pln - buy_price_pln)"
         tests:
           - not_null
       - name: holding_period_days
+        tests:
+          - not_null
+      - name: sell_channel
+        description: "Platform where item was sold (Steam / CSFloat / Skinport)"
         tests:
           - not_null
 

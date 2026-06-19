@@ -46,7 +46,15 @@ final as (
         -- Unrealized PnL %
         round(
             (((p.price_usd * r.rate) - a.buy_price) / nullif(a.buy_price, 0)) * 100
-        , 2)                                                                as pnl_pct
+        , 2)                                                                as pnl_pct,
+
+        -- Steam net value (gross price minus 15% Steam fee)
+        round(p.price_usd * a.quantity * 0.85, 2)                          as net_value_steam_usd,
+        round(p.price_usd * r.rate * a.quantity * 0.85, 2)                 as net_value_steam_pln,
+        round(((p.price_usd * r.rate * 0.85) - a.buy_price) * a.quantity, 2) as net_pnl_steam_pln,
+        round(
+            safe_divide((p.price_usd * r.rate * 0.85) - a.buy_price, a.buy_price) * 100
+        , 2)                                                                as net_pnl_pct_steam
 
     from assets a
     left join prices p on a.item_id = p.item_id
