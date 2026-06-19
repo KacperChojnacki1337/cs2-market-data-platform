@@ -7,6 +7,13 @@ crash.log
 *.tfvars.json
 override.tf
 override.tf.json
+tfplan
+
+# dbt artifacts
+dbt/steam_tracker/dbt_packages/
+dbt/steam_tracker/logs/
+dbt/steam_tracker/target/
+dbt/steam_tracker/package-lock.yml
 
 # Python
 __pycache__/
