@@ -34,3 +34,6 @@ secrets/
 PLANNED_CHANGES.md
 
 lambda/producer/layer/python/
+
+# Personal inventory data -- generated locally, not for version control
+scripts/inventory.csv
