@@ -381,7 +381,7 @@ resource "aws_lambda_function" "steam_producer" {
   role          = aws_iam_role.lambda_exec_role.arn
   handler       = "producer_lambda.lambda_handler"
   runtime       = "python3.11"
-  timeout       = 300
+  timeout       = 600
   memory_size   = 256
 
   layers = [aws_lambda_layer_version.python_libs.arn]
@@ -542,7 +542,7 @@ resource "aws_budgets_budget" "monthly_budget" {
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   alarm_name          = "steam-producer-duration"
-  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (240s of 300s)"
+  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (480s of 600s)"
   namespace           = "AWS/Lambda"
   metric_name         = "Duration"
   dimensions = {
@@ -551,7 +551,7 @@ resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   statistic           = "Maximum"
   period              = 300
   evaluation_periods  = 1
-  threshold           = 240000
+  threshold           = 480000
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
