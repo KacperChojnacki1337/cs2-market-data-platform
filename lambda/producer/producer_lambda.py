@@ -178,6 +178,10 @@ def lambda_handler(event, context):
         else:
             print("Could not fetch NBP rate, skipping exchange rate row.")
 
+    # Counter for Steam price requests — used for batch cooldown every 10 items.
+    # Steam rate-limits AWS datacenter IPs after ~10 requests; 35s pause resets the limit.
+    steam_request_count = 0
+
     for item in items:
         item_id = item['item_id']
         asset_id = item.get('asset_id')
@@ -199,7 +203,13 @@ def lambda_handler(event, context):
                 })
 
             # 4b. Fetch Steam price — only for still-owned (buy) items
+            if steam_request_count > 0 and steam_request_count % 10 == 0:
+                print(f"STEAM_BATCH_COOLDOWN | requests={steam_request_count} | sleeping 35s")
+                time.sleep(35)
+
             result = get_steam_price(item_id, median_7d=medians_7d.get(item_id))
+            steam_request_count += 1
+            time.sleep(1.5)
             if result is not None:
                 price_usd, price_flagged = result
                 prices_rows.append({
