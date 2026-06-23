@@ -402,9 +402,9 @@ resource "aws_lambda_function" "steam_producer" {
 # 5. EventBridge: Batched Price Fetch (15 invocations × 10 items each)
 # ==========================================
 
-# Each rule triggers one Lambda invocation with a different batch_index.
-# Every invocation gets a fresh AWS IP, bypassing Steam's per-IP rate limit.
-# Batches staggered 2 min apart: 07:00, 07:02, ... 07:28 UTC (before dbt at 08:00).
+# All 15 rules fire at exactly 07:00 UTC — Lambda scales to 15 concurrent instances,
+# each on a different host/IP, bypassing Steam's per-IP rate limit (~10 req/IP).
+# Sequential/staggered invocations reuse the same warm container = same IP = rate-limited.
 # Items are sorted alphabetically inside Lambda so the same item always hits the same batch.
 # To support more items: increase price_batch_count in terraform.tfvars (10 items per batch).
 
@@ -412,7 +412,7 @@ resource "aws_cloudwatch_event_rule" "producer_batch" {
   count               = var.price_batch_count
   name                = "steam-producer-price-batch-${count.index}"
   description         = "Price batch ${count.index} — items ${count.index * 10}-${count.index * 10 + 9} alphabetically"
-  schedule_expression = "cron(${count.index * 2} 7 * * ? *)"
+  schedule_expression = "cron(0 7 * * ? *)"
 }
 
 resource "aws_cloudwatch_event_target" "producer_batch" {
