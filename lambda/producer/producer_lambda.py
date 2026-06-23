@@ -2,6 +2,7 @@ import boto3
 import json
 import requests
 import os
+from collections import defaultdict
 from datetime import datetime, timezone
 from google.cloud import bigquery
 from google.oauth2 import service_account
@@ -92,7 +93,19 @@ def lambda_handler(event, context):
         current_ts = datetime.now(timezone.utc).isoformat()
     run_date = current_ts[:10]
 
-    print(f"INVOCATION_START | date={run_date} | request_id={request_id}")
+    # Batch mode: EventBridge passes batch_index + batch_size so each Lambda invocation
+    # fetches prices for a different slice of the inventory. Each batch runs on a fresh
+    # AWS IP, bypassing Steam's per-IP rate limit (~10 req/IP).
+    # Without batch_index (e.g. manual invocation), all owned items are fetched in one go.
+    batch_index = (event or {}).get('batch_index')  # None = all items
+    batch_size  = int((event or {}).get('batch_size', 10))
+
+    if batch_index is not None:
+        batch_index = int(batch_index)
+        print(f"INVOCATION_START | date={run_date} | batch_index={batch_index} | batch_size={batch_size} | request_id={request_id}")
+    else:
+        print(f"INVOCATION_START | date={run_date} | batch_mode=off | request_id={request_id}")
+
     print(f"Scanning DynamoDB: {DYNAMODB_TABLE}")
 
     items = inventory_table.scan().get('Items', [])
@@ -103,18 +116,19 @@ def lambda_handler(event, context):
 
     client = bigquery.Client(credentials=_GCP_CREDENTIALS, project=GCP_PROJECT_ID)
 
-    # Non-blocking double-fire detection: log warning if today's prices already exist.
-    # Data quality is guaranteed by ROW_NUMBER() deduplication in int_latest_prices.
-    try:
-        check = f"SELECT COUNT(*) as cnt FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history` WHERE DATE(timestamp) = '{run_date}'"
-        rows = list(client.query(check).result())
-        existing_price_rows = rows[0].cnt
-        if existing_price_rows > 0:
-            print(f"DOUBLE_FIRE_DETECTED | date={run_date} | existing_price_rows={existing_price_rows} | proceeding (silver layer deduplicates via ROW_NUMBER)")
-        else:
-            print(f"IDEMPOTENCY_OK | date={run_date} | no existing price rows")
-    except Exception as e:
-        print(f"Warning: double-fire check failed ({e}), proceeding.")
+    # Double-fire detection only applies in non-batch mode (single daily invocation).
+    # In batch mode, later batches legitimately see prices from earlier batches — not a double-fire.
+    if batch_index is None:
+        try:
+            check = f"SELECT COUNT(*) as cnt FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history` WHERE DATE(timestamp) = '{run_date}'"
+            rows = list(client.query(check).result())
+            existing_price_rows = rows[0].cnt
+            if existing_price_rows > 0:
+                print(f"DOUBLE_FIRE_DETECTED | date={run_date} | existing_price_rows={existing_price_rows} | proceeding (silver layer deduplicates via ROW_NUMBER)")
+            else:
+                print(f"IDEMPOTENCY_OK | date={run_date} | no existing price rows")
+        except Exception as e:
+            print(f"Warning: double-fire check failed ({e}), proceeding.")
 
     assets_rows = []
     sales_rows = []
@@ -178,17 +192,25 @@ def lambda_handler(event, context):
         else:
             print("Could not fetch NBP rate, skipping exchange rate row.")
 
-    # Counter for Steam price requests — used for batch cooldown every 10 items.
-    # Steam rate-limits AWS datacenter IPs after ~10 requests; 35s pause resets the limit.
-    steam_request_count = 0
+    # Compute net quantity per item_id from DynamoDB scan (buys minus sells).
+    # Only items with net_quantity > 0 are still in the portfolio — prices are only needed for those.
+    net_quantity: dict = defaultdict(int)
+    for item in items:
+        qty = int(item.get('quantity', 1))
+        if item.get('event_type', 'buy') == 'buy':
+            net_quantity[item['item_id']] += qty
+        elif item.get('event_type') == 'sell':
+            net_quantity[item['item_id']] -= qty
 
+    # Phase 1: Build assets and sales rows — process ALL items regardless of batch.
+    # Idempotency checks ensure duplicates are never re-inserted.
+    buy_items = []
     for item in items:
         item_id = item['item_id']
         asset_id = item.get('asset_id')
         event_type = item.get('event_type', 'buy')
 
         if event_type == 'buy':
-            # 4a. Build assets row — only new buy events not yet in BigQuery
             if asset_id not in existing_asset_ids:
                 assets_rows.append({
                     "asset_id": asset_id,
@@ -201,30 +223,11 @@ def lambda_handler(event, context):
                     "purchase_channel": item.get('purchase_channel', 'Unknown'),
                     "last_updated": current_ts
                 })
-
-            # 4b. Fetch Steam price — only for still-owned (buy) items
-            if steam_request_count > 0 and steam_request_count % 10 == 0:
-                print(f"STEAM_BATCH_COOLDOWN | requests={steam_request_count} | sleeping 35s")
-                time.sleep(35)
-
-            result = get_steam_price(item_id, median_7d=medians_7d.get(item_id))
-            steam_request_count += 1
-            time.sleep(1.5)
-            if result is not None:
-                price_usd, price_flagged = result
-                prices_rows.append({
-                    "item_id": item_id,
-                    "price_usd": price_usd,
-                    "price_flagged": price_flagged,
-                    "timestamp": current_ts
-                })
-                if price_flagged:
-                    print(f"PRICE_FLAGGED | {item_id} | price_usd={price_usd}")
-            else:
-                print(f"Could not fetch price for {item_id}, skipping price row.")
+            # Only collect for price fetch if still owned (net_quantity > 0).
+            if net_quantity[item_id] > 0:
+                buy_items.append(item)
 
         elif event_type == 'sell':
-            # 4c. Build sales row — only new sell events not yet in BigQuery
             if asset_id not in existing_sell_ids:
                 sales_rows.append({
                     "asset_id": asset_id,
@@ -237,6 +240,43 @@ def lambda_handler(event, context):
                     "quantity": int(item.get('quantity', 1)),
                     "timestamp": current_ts
                 })
+
+    # Phase 2: Fetch Steam prices — only for this batch's slice of owned buy items.
+    # Sort alphabetically by item_id so each batch is deterministic (DynamoDB scan order varies).
+    # Deduplicate by item_id: multiple buy events for the same skin (e.g. bought twice)
+    # still only need one price fetch — prices_history is keyed by item_id, not asset_id.
+    buy_items_sorted = sorted(buy_items, key=lambda x: x['item_id'])
+    seen_item_ids: set = set()
+    buy_items_deduped = []
+    for item in buy_items_sorted:
+        if item['item_id'] not in seen_item_ids:
+            seen_item_ids.add(item['item_id'])
+            buy_items_deduped.append(item)
+
+    if batch_index is not None:
+        start = batch_index * batch_size
+        end   = start + batch_size
+        items_for_prices = buy_items_deduped[start:end]
+        print(f"BATCH_PRICE_FETCH | batch_index={batch_index} | items_in_batch={len(items_for_prices)} | range={start}-{end - 1} | total_owned_unique_items={len(buy_items_deduped)}")
+    else:
+        items_for_prices = buy_items_deduped
+
+    for item in items_for_prices:
+        item_id = item['item_id']
+        result = get_steam_price(item_id, median_7d=medians_7d.get(item_id))
+        time.sleep(1.0)
+        if result is not None:
+            price_usd, price_flagged = result
+            prices_rows.append({
+                "item_id": item_id,
+                "price_usd": price_usd,
+                "price_flagged": price_flagged,
+                "timestamp": current_ts
+            })
+            if price_flagged:
+                print(f"PRICE_FLAGGED | {item_id} | price_usd={price_usd}")
+        else:
+            print(f"Could not fetch price for {item_id}, skipping price row.")
 
     # 5. Write to BigQuery
     results = {}
@@ -273,7 +313,7 @@ def lambda_handler(event, context):
         "exchange_rates_written": len(exchange_rate_rows),
         "results": results
     }
-    print(f"INVOCATION_END | date={run_date} | assets_written={len(assets_rows)} | sales_written={len(sales_rows)} | prices_written={len(prices_rows)} | exchange_rates_written={len(exchange_rate_rows)}")
+    print(f"INVOCATION_END | date={run_date} | batch_index={batch_index} | assets_written={len(assets_rows)} | sales_written={len(sales_rows)} | prices_written={len(prices_rows)} | exchange_rates_written={len(exchange_rate_rows)}")
 
     return {
         'statusCode': 200,
