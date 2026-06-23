@@ -26,7 +26,7 @@ def _load_gcp_credentials():
 
 _GCP_CREDENTIALS = _load_gcp_credentials()
 
-def get_steam_price(market_hash_name, median_7d=None, retries=3, backoff=2):
+def get_steam_price(market_hash_name, median_7d=None, retries=5, backoff=2):
     encoded_name = requests.utils.quote(market_hash_name)
     url = f"https://steamcommunity.com/market/priceoverview/?appid=730&currency=1&market_hash_name={encoded_name}"
     for attempt in range(retries):
@@ -51,6 +51,11 @@ def get_steam_price(market_hash_name, median_7d=None, retries=3, backoff=2):
                             print(f"PRICE_SPIKE | {market_hash_name} | price={price} | median_7d={median_7d:.2f} | deviation={deviation:.0%}")
 
                     return price, flagged
+            elif response.status_code == 429:
+                wait = 10 * (attempt + 1)
+                print(f"STEAM_RATE_LIMIT | {market_hash_name} | attempt={attempt + 1}/{retries} | sleeping {wait}s")
+                if attempt < retries - 1:
+                    time.sleep(wait)
         except Exception as e:
             print(f"Attempt {attempt + 1}/{retries} failed for {market_hash_name}: {e}")
             if attempt < retries - 1:
