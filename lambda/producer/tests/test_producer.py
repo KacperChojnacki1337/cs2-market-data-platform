@@ -276,7 +276,41 @@ def test_sell_event_writes_sell_channel():
 
 
 # ---------------------------------------------------------------------------
-# Test 12 — Batch mode: only this batch's items get price fetches
+# Test 12 — Steam 429: retries with backoff, succeeds on second attempt
+# ---------------------------------------------------------------------------
+
+def test_steam_429_retries_and_succeeds():
+    mock_429 = MagicMock()
+    mock_429.status_code = 429
+
+    with patch("producer_lambda.requests.get", side_effect=[mock_429, _steam_response("50.00", "100")]):
+        with patch("producer_lambda.time.sleep") as mock_sleep:
+            result = producer_lambda.get_steam_price("AWP | Test")
+
+    assert result is not None
+    price, flagged = result
+    assert price == 50.0
+    assert flagged is False
+    mock_sleep.assert_called_once_with(10)
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — Steam 429: exhausts all retries, returns None
+# ---------------------------------------------------------------------------
+
+def test_steam_429_exhausts_retries_returns_none():
+    mock_429 = MagicMock()
+    mock_429.status_code = 429
+
+    with patch("producer_lambda.requests.get", return_value=mock_429):
+        with patch("producer_lambda.time.sleep"):
+            result = producer_lambda.get_steam_price("AWP | Test")
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Test 15 — Batch mode: only this batch's items get price fetches
 # ---------------------------------------------------------------------------
 
 def test_batch_mode_fetches_only_batch_items():
@@ -309,7 +343,7 @@ def test_batch_mode_fetches_only_batch_items():
 
 
 # ---------------------------------------------------------------------------
-# Test 13 — Batch mode: assets written for ALL items even when batch_index limits prices
+# Test 16 — Batch mode: assets written for ALL items even when batch_index limits prices
 # ---------------------------------------------------------------------------
 
 def test_batch_mode_assets_written_for_all_items():
@@ -341,7 +375,7 @@ def test_batch_mode_assets_written_for_all_items():
 
 
 # ---------------------------------------------------------------------------
-# Test 14 — net_quantity: sold items excluded from price fetch
+# Test 17 — net_quantity: sold items excluded from price fetch
 # ---------------------------------------------------------------------------
 
 def test_sold_items_excluded_from_price_fetch():
