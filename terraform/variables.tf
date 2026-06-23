@@ -34,3 +34,9 @@ variable "gcp_project_number" {
   description = "GCP Project Number (numeric, found in GCP Console > Home > Project info)"
   type        = string
 }
+
+variable "price_batch_count" {
+  description = "Number of EventBridge-triggered price batches (10 items each). Increase when inventory exceeds batch_count * 10."
+  type        = number
+  default     = 15
+}

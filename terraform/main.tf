@@ -399,26 +399,39 @@ resource "aws_lambda_function" "steam_producer" {
 }
 
 # ==========================================
-# 5. EventBridge: Producer Schedule
+# 5. EventBridge: Batched Price Fetch (15 invocations × 10 items each)
 # ==========================================
 
-resource "aws_cloudwatch_event_rule" "producer_schedule" {
-  name                = "steam-producer-daily"
-  description         = "Triggers producer Lambda daily at 07:00 UTC â€” 1 hour before dbt run"
-  schedule_expression = "cron(0 7 * * ? *)"
+# Each rule triggers one Lambda invocation with a different batch_index.
+# Every invocation gets a fresh AWS IP, bypassing Steam's per-IP rate limit.
+# Batches staggered 2 min apart: 07:00, 07:02, ... 07:28 UTC (before dbt at 08:00).
+# Items are sorted alphabetically inside Lambda so the same item always hits the same batch.
+# To support more items: increase price_batch_count in terraform.tfvars (10 items per batch).
+
+resource "aws_cloudwatch_event_rule" "producer_batch" {
+  count               = var.price_batch_count
+  name                = "steam-producer-price-batch-${count.index}"
+  description         = "Price batch ${count.index} — items ${count.index * 10}-${count.index * 10 + 9} alphabetically"
+  schedule_expression = "cron(${count.index * 2} 7 * * ? *)"
 }
 
-resource "aws_cloudwatch_event_target" "producer_target" {
-  rule = aws_cloudwatch_event_rule.producer_schedule.name
-  arn  = aws_lambda_function.steam_producer.arn
+resource "aws_cloudwatch_event_target" "producer_batch" {
+  count = var.price_batch_count
+  rule  = aws_cloudwatch_event_rule.producer_batch[count.index].name
+  arn   = aws_lambda_function.steam_producer.arn
+  input = jsonencode({
+    batch_index = count.index
+    batch_size  = 10
+  })
 }
 
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowEventBridgeInvoke"
+resource "aws_lambda_permission" "allow_eventbridge_batch" {
+  count         = var.price_batch_count
+  statement_id  = "AllowEventBridgeBatch${count.index}"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.steam_producer.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.producer_schedule.arn
+  source_arn    = aws_cloudwatch_event_rule.producer_batch[count.index].arn
 }
 
 # ==========================================
