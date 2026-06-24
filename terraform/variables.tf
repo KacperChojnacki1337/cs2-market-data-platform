@@ -36,7 +36,7 @@ variable "gcp_project_number" {
 }
 
 variable "price_batch_count" {
-  description = "Number of EventBridge-triggered price batches (10 items each). Increase when inventory exceeds batch_count * 10."
+  description = "Number of EventBridge-triggered price batches (5 items each). Increase when inventory exceeds batch_count * 5."
   type        = number
-  default     = 15
+  default     = 20
 }

@@ -19,12 +19,14 @@ def _steam_response(price: str, volume: str) -> MagicMock:
     return resp
 
 
-def _bq_client_mock(existing_asset_ids=None, existing_sell_ids=None, existing_price_rows=0, existing_exchange_rate_rows=0):
+def _bq_client_mock(existing_asset_ids=None, existing_sell_ids=None, existing_price_rows=0, existing_exchange_rate_rows=0, missing_item_ids=None):
     client = MagicMock()
 
     def _query_side_effect(sql):
         result = MagicMock()
-        if "assets_history" in sql and "SELECT DISTINCT" in sql:
+        if "NOT IN" in sql and "assets_history" in sql:
+            result.result.return_value = [MagicMock(item_id=i) for i in (missing_item_ids or [])]
+        elif "assets_history" in sql and "SELECT DISTINCT" in sql:
             result.result.return_value = [MagicMock(asset_id=a) for a in (existing_asset_ids or [])]
         elif "sales_history" in sql and "SELECT DISTINCT" in sql:
             result.result.return_value = [MagicMock(asset_id=s) for s in (existing_sell_ids or [])]
@@ -400,3 +402,47 @@ def test_sold_items_excluded_from_price_fetch():
     # AK-47 | Kept Skin: net_quantity = 1 buy → price fetched
     assert "AWP | Sold Skin" not in fetched_names
     assert "AK-47 | Kept Skin" in fetched_names
+
+
+# ---------------------------------------------------------------------------
+# Test 18 — retry_missing: fetches only items without a valid price today, no assets/sales written
+# ---------------------------------------------------------------------------
+
+def test_retry_missing_fetches_only_missing_items():
+    items = [
+        _make_buy_item(asset_id=f"uuid-{i}", item_id=f"Item{i} | Skin")
+        for i in range(4)
+    ]
+    # BQ reports Item1 and Item3 as missing (no valid price today)
+    bq = _bq_client_mock(
+        existing_exchange_rate_rows=1,
+        missing_item_ids=["Item1 | Skin", "Item3 | Skin"],
+    )
+
+    fetched_names = []
+    captured_rows = []
+
+    def _capture_steam(name, **kwargs):
+        fetched_names.append(name)
+        return (10.0, False)
+
+    def _capture_insert(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture_insert
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": items}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_steam_price", side_effect=_capture_steam):
+                with patch("producer_lambda.get_nbp_rate", return_value=3.95):
+                    import json as _json
+                    result = producer_lambda.lambda_handler({"retry_missing": True}, None)
+
+    body = _json.loads(result["body"])
+    # Only the 2 missing items fetched
+    assert fetched_names == ["Item1 | Skin", "Item3 | Skin"]
+    assert body["prices_written"] == 2
+    # No assets or sales written in retry_missing mode
+    assert not any("assets_history" in t for t, _ in captured_rows)
+    assert not any("sales_history" in t for t, _ in captured_rows)
