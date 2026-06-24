@@ -102,10 +102,13 @@ def lambda_handler(event, context):
     # fetches prices for a different slice of the inventory. Each batch runs on a fresh
     # AWS IP, bypassing Steam's per-IP rate limit (~10 req/IP).
     # Without batch_index (e.g. manual invocation), all owned items are fetched in one go.
-    batch_index = (event or {}).get('batch_index')  # None = all items
-    batch_size  = int((event or {}).get('batch_size', 10))
+    batch_index   = (event or {}).get('batch_index')  # None = all items
+    batch_size    = int((event or {}).get('batch_size', 10))
+    retry_missing = bool((event or {}).get('retry_missing', False))
 
-    if batch_index is not None:
+    if retry_missing:
+        print(f"INVOCATION_START | date={run_date} | mode=retry_missing | request_id={request_id}")
+    elif batch_index is not None:
         batch_index = int(batch_index)
         print(f"INVOCATION_START | date={run_date} | batch_index={batch_index} | batch_size={batch_size} | request_id={request_id}")
     else:
@@ -121,9 +124,10 @@ def lambda_handler(event, context):
 
     client = bigquery.Client(credentials=_GCP_CREDENTIALS, project=GCP_PROJECT_ID)
 
-    # Double-fire detection only applies in non-batch mode (single daily invocation).
+    # Double-fire detection only applies in non-batch, non-retry mode.
     # In batch mode, later batches legitimately see prices from earlier batches — not a double-fire.
-    if batch_index is None:
+    # In retry_missing mode, prices from the 07:00 run are expected to exist.
+    if batch_index is None and not retry_missing:
         try:
             check = f"SELECT COUNT(*) as cnt FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history` WHERE DATE(timestamp) = '{run_date}'"
             rows = list(client.query(check).result())
@@ -140,23 +144,23 @@ def lambda_handler(event, context):
     prices_rows = []
     exchange_rate_rows = []
 
-    # 1. Fetch existing asset_ids — buy events are immutable, skip re-inserts
+    # 1 & 2: Assets/sales idempotency checks — skipped in retry_missing mode (already written by 07:00 run).
     existing_asset_ids = set()
-    try:
-        query = f"SELECT DISTINCT asset_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.assets_history`"
-        existing_asset_ids = {row.asset_id for row in client.query(query).result()}
-        print(f"Found {len(existing_asset_ids)} existing assets, will skip re-inserts.")
-    except Exception as e:
-        print(f"Warning: could not fetch existing asset_ids ({e}), will insert all.")
-
-    # 2. Fetch existing sell asset_ids — sell events are immutable, skip re-inserts
     existing_sell_ids = set()
-    try:
-        query = f"SELECT DISTINCT asset_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.sales_history`"
-        existing_sell_ids = {row.asset_id for row in client.query(query).result()}
-        print(f"Found {len(existing_sell_ids)} existing sells, will skip re-inserts.")
-    except Exception as e:
-        print(f"Warning: could not fetch existing sell_ids ({e}), will insert all.")
+    if not retry_missing:
+        try:
+            query = f"SELECT DISTINCT asset_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.assets_history`"
+            existing_asset_ids = {row.asset_id for row in client.query(query).result()}
+            print(f"Found {len(existing_asset_ids)} existing assets, will skip re-inserts.")
+        except Exception as e:
+            print(f"Warning: could not fetch existing asset_ids ({e}), will insert all.")
+
+        try:
+            query = f"SELECT DISTINCT asset_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.sales_history`"
+            existing_sell_ids = {row.asset_id for row in client.query(query).result()}
+            print(f"Found {len(existing_sell_ids)} existing sells, will skip re-inserts.")
+        except Exception as e:
+            print(f"Warning: could not fetch existing sell_ids ({e}), will insert all.")
 
     # 3. Fetch 7-day price medians for spike detection (one BQ query for all items)
     medians_7d = {}
@@ -207,7 +211,7 @@ def lambda_handler(event, context):
         elif item.get('event_type') == 'sell':
             net_quantity[item['item_id']] -= qty
 
-    # Phase 1: Build assets and sales rows — process ALL items regardless of batch.
+    # Phase 1: Build assets and sales rows — skipped in retry_missing mode.
     # Idempotency checks ensure duplicates are never re-inserted.
     buy_items = []
     for item in items:
@@ -216,7 +220,7 @@ def lambda_handler(event, context):
         event_type = item.get('event_type', 'buy')
 
         if event_type == 'buy':
-            if asset_id not in existing_asset_ids:
+            if not retry_missing and asset_id not in existing_asset_ids:
                 assets_rows.append({
                     "asset_id": asset_id,
                     "item_id": item_id,
@@ -228,12 +232,12 @@ def lambda_handler(event, context):
                     "purchase_channel": item.get('purchase_channel', 'Unknown'),
                     "last_updated": current_ts
                 })
-            # Only collect for price fetch if still owned (net_quantity > 0).
+            # Always collect owned items — needed for Phase 2 price fetch.
             if net_quantity[item_id] > 0:
                 buy_items.append(item)
 
         elif event_type == 'sell':
-            if asset_id not in existing_sell_ids:
+            if not retry_missing and asset_id not in existing_sell_ids:
                 sales_rows.append({
                     "asset_id": asset_id,
                     "item_id": item_id,
@@ -258,7 +262,28 @@ def lambda_handler(event, context):
             seen_item_ids.add(item['item_id'])
             buy_items_deduped.append(item)
 
-    if batch_index is not None:
+    if retry_missing:
+        try:
+            missing_query = f"""
+                SELECT DISTINCT a.item_id
+                FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.assets_history` a
+                WHERE a.item_id NOT IN (
+                    SELECT item_id FROM `{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.prices_history`
+                    WHERE DATE(timestamp) = '{run_date}' AND price_flagged = FALSE
+                )
+            """
+            missing_item_ids = {row.item_id for row in client.query(missing_query).result()}
+            print(f"RETRY_MISSING | found {len(missing_item_ids)} items without valid price today")
+        except Exception as e:
+            print(f"Warning: could not fetch missing item_ids ({e}), aborting retry.")
+            return {'statusCode': 200, 'body': json.dumps({"status": "retry_aborted", "reason": str(e)})}
+
+        if not missing_item_ids:
+            print(f"RETRY_MISSING | all items already have prices, nothing to do")
+            return {'statusCode': 200, 'body': json.dumps({"status": "success", "prices_written": 0})}
+
+        items_for_prices = [item for item in buy_items_deduped if item['item_id'] in missing_item_ids]
+    elif batch_index is not None:
         start = batch_index * batch_size
         end   = start + batch_size
         items_for_prices = buy_items_deduped[start:end]
