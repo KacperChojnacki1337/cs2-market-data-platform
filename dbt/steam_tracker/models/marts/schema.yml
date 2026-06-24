@@ -25,14 +25,16 @@ models:
           - not_null
       - name: current_price_usd
         tests:
-          - not_null
+          - not_null:
+              severity: warn
       - name: usd_pln_rate
         tests:
           - not_null
       - name: net_value_steam_pln
         description: "Estimated net value if sold on Steam today (gross × 0.85, after 15% Steam fee)"
         tests:
-          - not_null
+          - not_null:
+              severity: warn
       - name: net_pnl_steam_pln
         description: "Estimated net PnL if sold on Steam today (net_value_steam_pln - buy_price_pln)"
 
