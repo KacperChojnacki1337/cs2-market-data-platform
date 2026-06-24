@@ -399,19 +399,21 @@ resource "aws_lambda_function" "steam_producer" {
 }
 
 # ==========================================
-# 5. EventBridge: Batched Price Fetch (15 invocations × 10 items each)
+# 5. EventBridge: Batched Price Fetch (20 invocations × 5 items each, + retry at 07:30)
 # ==========================================
 
-# All 15 rules fire at exactly 07:00 UTC — Lambda scales to 15 concurrent instances,
+# All 20 rules fire at exactly 07:00 UTC — Lambda scales to 20 concurrent instances,
 # each on a different host/IP, bypassing Steam's per-IP rate limit (~10 req/IP).
-# Sequential/staggered invocations reuse the same warm container = same IP = rate-limited.
+# Smaller batches (5 items) reduce the chance of hitting the rate limit per instance.
+# A second identical set fires at 07:30 UTC to catch any items missed due to rate limiting.
 # Items are sorted alphabetically inside Lambda so the same item always hits the same batch.
-# To support more items: increase price_batch_count in terraform.tfvars (10 items per batch).
+# To support more items: increase price_batch_count in terraform.tfvars (5 items per batch).
 
+# --- First run: 07:00 UTC ---
 resource "aws_cloudwatch_event_rule" "producer_batch" {
   count               = var.price_batch_count
   name                = "steam-producer-price-batch-${count.index}"
-  description         = "Price batch ${count.index} — items ${count.index * 10}-${count.index * 10 + 9} alphabetically"
+  description         = "Price batch ${count.index} — items ${count.index * 5}-${count.index * 5 + 4} alphabetically"
   schedule_expression = "cron(0 7 * * ? *)"
 }
 
@@ -421,7 +423,7 @@ resource "aws_cloudwatch_event_target" "producer_batch" {
   arn   = aws_lambda_function.steam_producer.arn
   input = jsonencode({
     batch_index = count.index
-    batch_size  = 10
+    batch_size  = 5
   })
 }
 
@@ -432,6 +434,29 @@ resource "aws_lambda_permission" "allow_eventbridge_batch" {
   function_name = aws_lambda_function.steam_producer.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.producer_batch[count.index].arn
+}
+
+# --- Smart retry: 07:30 UTC — fetches only items without a valid price from the 07:00 run ---
+# Single invocation: Lambda queries BQ for missing item_ids, fetches only those.
+# Avoids re-fetching items that already have prices, minimising unnecessary Steam requests.
+resource "aws_cloudwatch_event_rule" "producer_retry_missing" {
+  name                = "steam-producer-retry-missing"
+  description         = "Smart retry at 07:30 UTC — fetches only items without a valid price today"
+  schedule_expression = "cron(30 7 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "producer_retry_missing" {
+  rule  = aws_cloudwatch_event_rule.producer_retry_missing.name
+  arn   = aws_lambda_function.steam_producer.arn
+  input = jsonencode({ retry_missing = true })
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_retry_missing" {
+  statement_id  = "AllowEventBridgeRetryMissing"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.steam_producer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.producer_retry_missing.arn
 }
 
 # ==========================================
