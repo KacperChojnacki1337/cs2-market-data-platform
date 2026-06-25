@@ -1,5 +1,6 @@
 import boto3
 import json
+import random
 import requests
 import os
 from collections import defaultdict
@@ -251,7 +252,9 @@ def lambda_handler(event, context):
                 })
 
     # Phase 2: Fetch Steam prices — only for this batch's slice of owned buy items.
-    # Sort alphabetically by item_id so each batch is deterministic (DynamoDB scan order varies).
+    # Sort alphabetically first (stable base), then shuffle with date as seed.
+    # Daily shuffle ensures no item is permanently assigned to the same batch/IP across days,
+    # preventing the same items from consistently hitting rate-limited IPs.
     # Deduplicate by item_id: multiple buy events for the same skin (e.g. bought twice)
     # still only need one price fetch — prices_history is keyed by item_id, not asset_id.
     buy_items_sorted = sorted(buy_items, key=lambda x: x['item_id'])
@@ -261,6 +264,7 @@ def lambda_handler(event, context):
         if item['item_id'] not in seen_item_ids:
             seen_item_ids.add(item['item_id'])
             buy_items_deduped.append(item)
+    random.Random(run_date).shuffle(buy_items_deduped)
 
     if retry_missing:
         try:
