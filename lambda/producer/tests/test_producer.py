@@ -316,8 +316,9 @@ def test_steam_429_exhausts_retries_returns_none():
 # ---------------------------------------------------------------------------
 
 def test_batch_mode_fetches_only_batch_items():
-    # 5 buy items; sorted alphabetically: A, B, C, D, E
-    # batch_index=1, batch_size=2 → should fetch only C, D (items[2:4])
+    # 5 buy items — after dedup + daily shuffle (seeded by run_date), batch_index=1, batch_size=2
+    # fetches exactly 2 items from the shuffled list (which 2 depends on the date seed).
+    import json as _json, random as _random, datetime as _dt
     items = [
         _make_buy_item(asset_id=f"uuid-{n}", item_id=f"{c} | Skin")
         for n, c in enumerate(["C", "A", "E", "B", "D"])
@@ -334,14 +335,14 @@ def test_batch_mode_fetches_only_batch_items():
         with patch("producer_lambda.bigquery.Client", return_value=bq):
             with patch("producer_lambda.get_steam_price", side_effect=_capture_steam):
                 with patch("producer_lambda.get_nbp_rate", return_value=3.95):
-                    import json as _json
                     result = producer_lambda.lambda_handler({"batch_index": 1, "batch_size": 2}, None)
 
     body = _json.loads(result["body"])
     assert body["prices_written"] == 2
-    # Alphabetical order: A | Skin, B | Skin, C | Skin, D | Skin, E | Skin
-    # batch_index=1, batch_size=2 → items[2:4] = C | Skin, D | Skin
-    assert fetched_names == ["C | Skin", "D | Skin"]
+    # Exactly 2 items fetched; must be a subset of the 5 valid item_ids
+    all_names = {f"{c} | Skin" for c in ["A", "B", "C", "D", "E"]}
+    assert len(fetched_names) == 2
+    assert all(name in all_names for name in fetched_names)
 
 
 # ---------------------------------------------------------------------------
