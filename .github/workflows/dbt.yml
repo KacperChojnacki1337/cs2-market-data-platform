@@ -88,6 +88,10 @@ jobs:
         working-directory: dbt/steam_tracker
         run: dbt deps
 
+      - name: dbt seed
+        working-directory: dbt/steam_tracker
+        run: dbt seed --target dev
+
       - name: dbt run (dev)
         working-directory: dbt/steam_tracker
         run: dbt run --target dev
@@ -165,6 +169,10 @@ jobs:
       - name: dbt deps
         working-directory: dbt/steam_tracker
         run: dbt deps
+
+      - name: dbt seed
+        working-directory: dbt/steam_tracker
+        run: dbt seed --target prod
 
       - name: dbt run (prod)
         working-directory: dbt/steam_tracker
