@@ -441,8 +441,8 @@ def test_retry_missing_fetches_only_missing_items():
                     result = producer_lambda.lambda_handler({"retry_missing": True}, None)
 
     body = _json.loads(result["body"])
-    # Only the 2 missing items fetched
-    assert fetched_names == ["Item1 | Skin", "Item3 | Skin"]
+    # Only the 2 missing items fetched (order may vary due to daily shuffle)
+    assert set(fetched_names) == {"Item1 | Skin", "Item3 | Skin"}
     assert body["prices_written"] == 2
     # No assets or sales written in retry_missing mode
     assert not any("assets_history" in t for t, _ in captured_rows)
