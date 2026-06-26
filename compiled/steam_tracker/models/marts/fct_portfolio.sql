@@ -16,6 +16,10 @@ sold_items as (
     select distinct item_id from `steam-tracker-portfolio`.`steam_staging`.`stg_sales`
 ),
 
+coeffs as (
+    select * from `steam-tracker-portfolio`.`steam_raw`.`real_cash_coefficients`
+),
+
 final as (
     select
         a.asset_sk,
@@ -54,11 +58,27 @@ final as (
         round(((p.price_usd * r.rate * 0.85) - a.buy_price) * a.quantity, 2) as net_pnl_steam_pln,
         round(
             safe_divide((p.price_usd * r.rate * 0.85) - a.buy_price, a.buy_price) * 100
-        , 2)                                                                as net_pnl_pct_steam
+        , 2)                                                                as net_pnl_pct_steam,
+
+        -- Real cash value (CSFloat sale: price_usd × rate × quantity × coeff)
+        coalesce(c.real_cash_coeff, 0.65)                                   as real_cash_coeff,
+        round(p.price_usd * r.rate * a.quantity * coalesce(c.real_cash_coeff, 0.65), 2) as real_cash_value_pln,
+        round(
+            (p.price_usd * r.rate * a.quantity * coalesce(c.real_cash_coeff, 0.65))
+            - (a.buy_price * a.quantity)
+        , 2)                                                                as real_cash_pnl_pln,
+        round(
+            safe_divide(
+                (p.price_usd * r.rate * a.quantity * coalesce(c.real_cash_coeff, 0.65))
+                - (a.buy_price * a.quantity),
+                a.buy_price * a.quantity
+            ) * 100
+        , 2)                                                                as real_cash_pnl_pct
 
     from assets a
     left join prices p on a.item_id = p.item_id
     left join exchange_rate r on 1 = 1
+    left join coeffs c on a.category = c.category
     where a.item_id not in (select item_id from sold_items)
 )
 

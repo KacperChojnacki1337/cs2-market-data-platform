@@ -89,6 +89,10 @@ rates_filled as (
 sales as (
     select item_id, sell_date
     from `steam-tracker-portfolio`.`steam_staging`.`stg_sales`
+),
+
+coeffs as (
+    select * from `steam-tracker-portfolio`.`steam_raw`.`real_cash_coefficients`
 )
 
 select
@@ -106,12 +110,16 @@ select
         sum(cast(a.buy_price as float64) * a.quantity)
     ) * 100, 2)                                                            as unrealized_pnl_pct,
     count(distinct a.asset_id)                                             as active_positions,
-    r.usd_pln_rate
+    r.usd_pln_rate,
+    round(
+        sum(a.quantity * pf.price_usd * r.usd_pln_rate * coalesce(c.real_cash_coeff, 0.65))
+    , 2)                                                                    as real_cash_portfolio_value_pln
 from prices_filled                  pf
 join `steam-tracker-portfolio`.`steam_marts`.`dim_assets`         a   on  pf.item_id       = a.item_id
 join rates_filled                    r   on  pf.snapshot_date = r.snapshot_date
 left join sales                   sold   on  a.item_id        = sold.item_id
     and sold.sell_date <= pf.snapshot_date
+left join coeffs                     c   on  a.category       = c.category
 where sold.item_id is null
   and pf.price_usd is not null
 group by pf.snapshot_date, r.usd_pln_rate
