@@ -37,6 +37,19 @@ models:
               severity: warn
       - name: net_pnl_steam_pln
         description: "Estimated net PnL if sold on Steam today (net_value_steam_pln - buy_price_pln)"
+      - name: real_cash_coeff
+        description: "Per-category CSFloat coefficient (Knife=0.83, Gloves=0.80, Skin/Case=0.74, Agent=0.60, Sticker=0.49, Other=0.65)"
+        tests:
+          - not_null
+      - name: real_cash_value_pln
+        description: "Real cash value if sold on CSFloat today (current_value_pln × real_cash_coeff)"
+        tests:
+          - not_null:
+              severity: warn
+      - name: real_cash_pnl_pln
+        description: "Real cash PnL if sold on CSFloat today (real_cash_value_pln - total_cost_pln)"
+      - name: real_cash_pnl_pct
+        description: "Real cash PnL % if sold on CSFloat today"
 
   - name: fct_realized_pnl
     description: "Realized PnL on closed positions — fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 5%)"
@@ -90,5 +103,9 @@ models:
         tests:
           - not_null
       - name: active_positions
+        tests:
+          - not_null
+      - name: real_cash_portfolio_value_pln
+        description: "Total real cash portfolio value if all active positions sold on CSFloat today"
         tests:
           - not_null
