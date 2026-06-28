@@ -63,11 +63,19 @@ Looker Studio (dashboard over steam_marts — planned, issue #63)
 
 ## Planned Features (GitHub Issues)
 
-| Issue | Feature | Status |
-|-------|---------|--------|
-| [#61](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/61) | Real cash value coefficient per category in `fct_portfolio` | Planned |
-| [#62](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/62) | Azure Data Factory as cross-cloud pipeline orchestrator | Planned |
-| [#63](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/63) | Looker Studio dashboard | Planned |
+Implementation order follows the dependency chain: EUR/PLN unblocks Skinport, multiple sources justify Airflow.
+
+| Order | Issue | Feature | Model | Status |
+|-------|-------|---------|-------|--------|
+| — | [#61](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/61) | Real cash value coefficient per category in `fct_portfolio` | Sonnet | Done |
+| 1 | [#68](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/68) | EUR/PLN exchange rate from NBP (unblocks Skinport) | Haiku | Planned |
+| 2 | [#67](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/67) | Skinport as second price source (validates `real_cash_coeff`) | Sonnet | Planned |
+| 3 | [#69](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/69) | Steam volume history + liquidity risk flag | Sonnet | Planned |
+| 4 | [#63](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/63) | Looker Studio dashboard | Haiku | Planned |
+| 5 | [#70](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/70) | Airflow orchestrator (replaces EventBridge + GH Actions cron) | Opus | Planned |
+| — | [#62](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/62) | Azure Data Factory as cross-cloud orchestrator | — | Won't do (superseded by #70) |
+
+**Model column** reflects the recommended Claude model per issue (see each issue body for rationale): Haiku for mechanical/UI-driven work, Sonnet for multi-file feature implementation, Opus for multi-system architecture.
 
 ## Project Structure
 

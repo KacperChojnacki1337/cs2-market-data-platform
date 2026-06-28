@@ -189,18 +189,19 @@ def lambda_handler(event, context):
         print(f"Warning: could not check existing exchange rate ({e}), will fetch and insert.")
 
     if not existing_rate_for_date:
-        usd_pln_rate = get_nbp_rate('USD')
-        if usd_pln_rate is not None:
-            exchange_rate_rows.append({
-                "from_currency": "USD",
-                "to_currency": "PLN",
-                "rate": usd_pln_rate,
-                "source": "NBP",
-                "timestamp": current_ts
-            })
-            print(f"NBP USD/PLN rate: {usd_pln_rate}")
-        else:
-            print("Could not fetch NBP rate, skipping exchange rate row.")
+        for currency in ['USD', 'EUR']:
+            rate = get_nbp_rate(currency)
+            if rate is not None:
+                exchange_rate_rows.append({
+                    "from_currency": currency,
+                    "to_currency": "PLN",
+                    "rate": rate,
+                    "source": "NBP",
+                    "timestamp": current_ts
+                })
+                print(f"NBP {currency}/PLN rate: {rate}")
+            else:
+                print(f"Could not fetch NBP {currency}/PLN rate, skipping.")
 
     # Compute net quantity per item_id from DynamoDB scan (buys minus sells).
     # Only items with net_quantity > 0 are still in the portfolio — prices are only needed for those.
