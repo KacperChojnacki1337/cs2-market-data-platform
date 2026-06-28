@@ -294,6 +294,47 @@ resource "google_bigquery_table" "dev_sales" {
 EOF
 }
 
+# --- Raw Table: Skinport Prices (Bronze) ---
+# Second price source for portfolio analysis (Skinport API data)
+resource "google_bigquery_table" "raw_skinport_prices" {
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "skinport_prices_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",             "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (must match Steam item_id for joining)"},
+  {"name": "skinport_price_pln",  "type": "FLOAT",     "mode": "NULLABLE", "description": "Skinport marketplace price in PLN"},
+  {"name": "timestamp",           "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this price"}
+]
+EOF
+}
+
+# --- Dev Table: Skinport Prices (Bronze Dev) ---
+resource "google_bigquery_table" "dev_skinport_prices" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "skinport_prices_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",             "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (must match Steam item_id for joining)"},
+  {"name": "skinport_price_pln",  "type": "FLOAT",     "mode": "NULLABLE", "description": "Skinport marketplace price in PLN"},
+  {"name": "timestamp",           "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this price"}
+]
+EOF
+}
+
 # ==========================================
 # 3. IAM: Producer Lambda Permissions
 # ==========================================
