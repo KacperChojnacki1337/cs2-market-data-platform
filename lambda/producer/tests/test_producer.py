@@ -251,6 +251,42 @@ def test_exchange_rate_idempotency_skips_existing():
 
 
 # ---------------------------------------------------------------------------
+# Test 9b — EUR/PLN exchange rate fetched alongside USD/PLN
+# ---------------------------------------------------------------------------
+
+def test_eur_pln_exchange_rate_fetched():
+    item = _make_buy_item()
+    bq = _bq_client_mock(existing_exchange_rate_rows=0)
+
+    captured_rows = []
+
+    def _capture_insert(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture_insert
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+                with patch("producer_lambda.get_nbp_rate", side_effect=[3.95, 4.05]) as mock_nbp:
+                    producer_lambda.lambda_handler({}, None)
+
+    # Verify both USD and EUR rates were fetched
+    assert mock_nbp.call_count == 2
+    mock_nbp.assert_any_call("USD")
+    mock_nbp.assert_any_call("EUR")
+
+    # Verify both rates written to BigQuery
+    exchange_rate_rows = [r for table, r in captured_rows if table.endswith("exchange_rates")]
+    assert len(exchange_rate_rows) == 2
+    assert {"USD", "EUR"} == {r["from_currency"] for r in exchange_rate_rows}
+    assert all(r["to_currency"] == "PLN" for r in exchange_rate_rows)
+    assert exchange_rate_rows[0]["rate"] == 3.95  # USD
+    assert exchange_rate_rows[1]["rate"] == 4.05  # EUR
+
+
+# ---------------------------------------------------------------------------
 # Test 11 — Sell event: sell_channel written to sales row, not purchase_channel
 # ---------------------------------------------------------------------------
 
