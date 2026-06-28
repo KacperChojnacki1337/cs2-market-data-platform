@@ -20,6 +20,10 @@ coeffs as (
     select * from `steam-tracker-portfolio`.`steam_raw`.`real_cash_coefficients`
 ),
 
+skinport_prices as (
+    select * from `steam-tracker-portfolio`.`steam_staging`.`int_latest_skinport_prices`
+),
+
 final as (
     select
         a.asset_sk,
@@ -73,12 +77,33 @@ final as (
                 - (a.buy_price * a.quantity),
                 a.buy_price * a.quantity
             ) * 100
-        , 2)                                                                as real_cash_pnl_pct
+        , 2)                                                                as real_cash_pnl_pct,
+
+        -- Skinport prices (alternative market)
+        s.skinport_price_pln,
+        round(
+            (s.skinport_price_pln - a.buy_price) * a.quantity, 2
+        )                                                                    as skinport_pnl_pln,
+        round(
+            safe_divide(
+                (s.skinport_price_pln - a.buy_price) * a.quantity,
+                a.buy_price * a.quantity
+            ) * 100
+        , 2)                                                                as skinport_pnl_pct,
+
+        -- Accuracy indicator: how close real_cash_coeff is to actual Skinport price
+        round(
+            safe_divide(
+                p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65),
+                s.skinport_price_pln
+            ), 4
+        )                                                                    as coeff_accuracy
 
     from assets a
     left join prices p on a.item_id = p.item_id
     left join exchange_rate r on 1 = 1
     left join coeffs c on a.category = c.category
+    left join skinport_prices s on a.item_id = s.item_id
     where a.item_id not in (select item_id from sold_items)
 )
 
