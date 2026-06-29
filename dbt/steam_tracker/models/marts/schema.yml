@@ -61,6 +61,10 @@ models:
         description: "PnL % if sold on Skinport today"
       - name: coeff_accuracy
         description: "Accuracy of real_cash_coeff: (Steam price USD × rate × coeff) / Skinport price PLN. Values ~1.0 mean coeff is accurate; >1.0 means pessimistic; <1.0 means optimistic"
+      - name: volume_7d
+        description: "7-day trade volume from Steam Market (sales count, 0 if no recent sales)"
+      - name: liquidity_risk
+        description: "Liquidity indicator: LOW (<5 sales/7d), MEDIUM (5-50 sales/7d), HIGH (>50 sales/7d). Low volume = hard to sell at market price"
 
   - name: fct_realized_pnl
     description: "Realized PnL on closed positions — fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 5%)"

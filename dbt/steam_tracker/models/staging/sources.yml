@@ -7,6 +7,7 @@ sources:
     tables:
       - name: assets_history
       - name: prices_history
+      - name: volume_history
       - name: skinport_prices_history
       - name: exchange_rates
       - name: sales_history
