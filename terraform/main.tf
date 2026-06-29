@@ -1,4 +1,4 @@
-﻿# ==========================================
+# ==========================================
 # 1. AWS: DynamoDB - Inventory (Source of Truth)
 # ==========================================
 resource "aws_dynamodb_table" "inventory_metadata" {
@@ -479,6 +479,39 @@ resource "aws_lambda_function" "steam_producer" {
   }
 }
 
+# --- Skinport price producer ---
+# Reads owned item_ids from steam_marts.dim_assets, fetches Skinport market prices,
+# writes to steam_raw.skinport_prices_history. Reuses the shared python_libs layer
+# (same deps: google-cloud-bigquery, google-auth, requests) and the producer IAM role
+# (needs SSM read for the GCP key + CloudWatch logs; does not touch DynamoDB).
+data "archive_file" "skinport_code_zip" {
+  type        = "zip"
+  source_file = "../lambda/skinport/skinport_lambda.py"
+  output_path = "skinport_lambda.zip"
+}
+
+resource "aws_lambda_function" "skinport_producer" {
+  filename      = data.archive_file.skinport_code_zip.output_path
+  function_name = "skinport_price_producer"
+  role          = aws_iam_role.lambda_exec_role.arn
+  handler       = "skinport_lambda.lambda_handler"
+  runtime       = "python3.11"
+  timeout       = 300
+  memory_size   = 256
+
+  layers = [aws_lambda_layer_version.python_libs.arn]
+
+  source_code_hash = data.archive_file.skinport_code_zip.output_base64sha256
+
+  environment {
+    variables = {
+      GCP_PROJECT_ID = var.gcp_project_id
+      BQ_DATASET_RAW = "steam_raw"
+      GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
+    }
+  }
+}
+
 # ==========================================
 # 5. EventBridge: Batched Price Fetch (20 invocations × 5 items each, + retry at 07:30)
 # ==========================================
@@ -540,6 +573,29 @@ resource "aws_lambda_permission" "allow_eventbridge_retry_missing" {
   source_arn    = aws_cloudwatch_event_rule.producer_retry_missing.arn
 }
 
+# --- Skinport: daily fetch at 07:00 UTC (parallel with Steam) ---
+# TEMPORARY: this rule is removed in #70 Phase 3 (Airflow cutover), where Airflow
+# invokes the Skinport Lambda via boto3 as part of the fan-out. Kept now so Skinport
+# prices start populating in production immediately, before Airflow exists.
+resource "aws_cloudwatch_event_rule" "skinport_daily" {
+  name                = "skinport-producer-daily"
+  description         = "Skinport price fetch at 07:00 UTC — TEMPORARY, replaced by Airflow (#70)"
+  schedule_expression = "cron(0 7 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "skinport_daily" {
+  rule = aws_cloudwatch_event_rule.skinport_daily.name
+  arn  = aws_lambda_function.skinport_producer.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_skinport" {
+  statement_id  = "AllowEventBridgeSkinport"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.skinport_producer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.skinport_daily.arn
+}
+
 # ==========================================
 # 6. CloudWatch: Alarms + SNS Notifications
 # ==========================================
@@ -556,10 +612,10 @@ resource "aws_sns_topic_subscription" "email" {
 
 # --- Producer Lambda: Errors ---
 resource "aws_cloudwatch_metric_alarm" "producer_errors" {
-  alarm_name          = "steam-producer-errors"
-  alarm_description   = "Producer Lambda is throwing errors"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Errors"
+  alarm_name        = "steam-producer-errors"
+  alarm_description = "Producer Lambda is throwing errors"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Errors"
   dimensions = {
     FunctionName = aws_lambda_function.steam_producer.function_name
   }
@@ -660,10 +716,10 @@ resource "aws_budgets_budget" "monthly_budget" {
 
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
-  alarm_name          = "steam-producer-duration"
-  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (480s of 600s)"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Duration"
+  alarm_name        = "steam-producer-duration"
+  alarm_description = "Producer Lambda duration exceeds 80% of timeout (480s of 600s)"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Duration"
   dimensions = {
     FunctionName = aws_lambda_function.steam_producer.function_name
   }
