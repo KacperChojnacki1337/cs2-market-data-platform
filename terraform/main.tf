@@ -454,6 +454,10 @@ resource "aws_lambda_layer_version" "python_libs" {
   filename            = data.archive_file.lambda_layer_zip.output_path
   layer_name          = "steam_tracker_libs"
   compatible_runtimes = ["python3.11"]
+
+  # Without this, Terraform only tracks the (constant) zip filename, so changes to
+  # the layer contents (e.g. adding the brotli package) never publish a new version.
+  source_code_hash = data.archive_file.lambda_layer_zip.output_base64sha256
 }
 
 resource "aws_lambda_function" "steam_producer" {
