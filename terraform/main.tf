@@ -335,6 +335,46 @@ resource "google_bigquery_table" "dev_skinport_prices" {
 EOF
 }
 
+# --- Prod Table: Steam Volume History (Bronze) ---
+resource "google_bigquery_table" "raw_volume_history" {
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "volume_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",    "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (Steam item identifier)"},
+  {"name": "volume_7d",  "type": "INTEGER",   "mode": "NULLABLE", "description": "7-day trade volume (sales count) from Steam Market"},
+  {"name": "timestamp",  "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this volume"}
+]
+EOF
+}
+
+# --- Dev Table: Steam Volume History (Bronze Dev) ---
+resource "google_bigquery_table" "dev_volume_history" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "volume_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",    "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (Steam item identifier)"},
+  {"name": "volume_7d",  "type": "INTEGER",   "mode": "NULLABLE", "description": "7-day trade volume (sales count) from Steam Market"},
+  {"name": "timestamp",  "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this volume"}
+]
+EOF
+}
+
 # ==========================================
 # 3. IAM: Producer Lambda Permissions
 # ==========================================

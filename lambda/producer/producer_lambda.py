@@ -51,7 +51,7 @@ def get_steam_price(market_hash_name, median_7d=None, retries=5, backoff=2):
                             flagged = True
                             print(f"PRICE_SPIKE | {market_hash_name} | price={price} | median_7d={median_7d:.2f} | deviation={deviation:.0%}")
 
-                    return price, flagged
+                    return price, volume, flagged
             elif response.status_code == 429:
                 wait = 10 * (attempt + 1)
                 print(f"STEAM_RATE_LIMIT | {market_hash_name} | attempt={attempt + 1}/{retries} | sleeping {wait}s")
@@ -143,6 +143,7 @@ def lambda_handler(event, context):
     assets_rows = []
     sales_rows = []
     prices_rows = []
+    volume_rows = []
     exchange_rate_rows = []
 
     # 1 & 2: Assets/sales idempotency checks — skipped in retry_missing mode (already written by 07:00 run).
@@ -301,11 +302,17 @@ def lambda_handler(event, context):
         result = get_steam_price(item_id, median_7d=medians_7d.get(item_id))
         time.sleep(1.0)
         if result is not None:
-            price_usd, price_flagged = result
+            price_usd, volume, price_flagged = result
             prices_rows.append({
                 "item_id": item_id,
                 "price_usd": price_usd,
                 "price_flagged": price_flagged,
+                "timestamp": current_ts
+            })
+            # Store volume separately in volume_history table
+            volume_rows.append({
+                "item_id": item_id,
+                "volume_7d": volume,
                 "timestamp": current_ts
             })
             if price_flagged:
@@ -334,6 +341,12 @@ def lambda_handler(event, context):
         results['prices'] = "success" if not errors else f"errors: {errors}"
         print(f"prices_history: {results['prices']}")
 
+    if volume_rows:
+        table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.volume_history"
+        errors = client.insert_rows_json(table_id, volume_rows)
+        results['volumes'] = "success" if not errors else f"errors: {errors}"
+        print(f"volume_history: {results['volumes']}")
+
     if exchange_rate_rows:
         table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_RAW}.exchange_rates"
         errors = client.insert_rows_json(table_id, exchange_rate_rows)
@@ -345,10 +358,11 @@ def lambda_handler(event, context):
         "assets_written": len(assets_rows),
         "sales_written": len(sales_rows),
         "prices_written": len(prices_rows),
+        "volumes_written": len(volume_rows),
         "exchange_rates_written": len(exchange_rate_rows),
         "results": results
     }
-    print(f"INVOCATION_END | date={run_date} | batch_index={batch_index} | assets_written={len(assets_rows)} | sales_written={len(sales_rows)} | prices_written={len(prices_rows)} | exchange_rates_written={len(exchange_rate_rows)}")
+    print(f"INVOCATION_END | date={run_date} | batch_index={batch_index} | assets_written={len(assets_rows)} | sales_written={len(sales_rows)} | prices_written={len(prices_rows)} | volumes_written={len(volume_rows)} | exchange_rates_written={len(exchange_rate_rows)}")
 
     return {
         'statusCode': 200,

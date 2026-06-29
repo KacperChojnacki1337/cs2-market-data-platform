@@ -24,6 +24,10 @@ skinport_prices as (
     select * from {{ ref('int_latest_skinport_prices') }}
 ),
 
+volume as (
+    select * from {{ ref('int_latest_volume') }}
+),
+
 final as (
     select
         a.asset_sk,
@@ -79,6 +83,14 @@ final as (
             ) * 100
         , 2)                                                                as real_cash_pnl_pct,
 
+        -- Steam volume (liquidity indicator)
+        coalesce(v.volume_7d, 0)                                            as volume_7d,
+        case
+            when coalesce(v.volume_7d, 0) < 5 then 'LOW'
+            when coalesce(v.volume_7d, 0) < 50 then 'MEDIUM'
+            else 'HIGH'
+        end                                                                 as liquidity_risk,
+
         -- Skinport prices (alternative market)
         s.skinport_price_pln,
         round(
@@ -104,6 +116,7 @@ final as (
     left join exchange_rate r on 1 = 1
     left join coeffs c on a.category = c.category
     left join skinport_prices s on a.item_id = s.item_id
+    left join volume v on a.item_id = v.item_id
     where a.item_id not in (select item_id from sold_items)
 )
 
