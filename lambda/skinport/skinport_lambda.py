@@ -28,6 +28,9 @@ def fetch_skinport_prices(owned_item_ids, retries=5, backoff=2):
     Returns dict of {item_id: price_pln} for successfully matched items.
     """
     url = "https://api.skinport.com/v1/items?app_id=730&currency=PLN"
+    # Skinport requires Brotli — it returns 406 Not Acceptable for gzip/deflate.
+    # The `brotli` package is bundled in the shared Lambda layer so requests/urllib3
+    # can transparently decompress the `br` response before response.json().
     headers = {"Accept-Encoding": "br"}
     matched_prices = {}
     unmatched_names = []
