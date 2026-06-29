@@ -102,8 +102,9 @@ def test_steam_zero_volume_flagged():
         result = producer_lambda.get_steam_price("AWP | Test", median_7d=100.0)
 
     assert result is not None
-    price, flagged = result
+    price, volume, flagged = result
     assert price == 100.0
+    assert volume == 0
     assert flagged is True
 
 
@@ -115,7 +116,7 @@ def test_steam_spike_above_threshold_flagged():
     with patch("producer_lambda.requests.get", return_value=_steam_response("200.00", "50")):
         result = producer_lambda.get_steam_price("AWP | Test", median_7d=100.0)
 
-    price, flagged = result
+    price, volume, flagged = result
     assert price == 200.0
     assert flagged is True
 
@@ -128,7 +129,7 @@ def test_steam_below_threshold_not_flagged():
     with patch("producer_lambda.requests.get", return_value=_steam_response("149.00", "200")):
         result = producer_lambda.get_steam_price("AWP | Test", median_7d=100.0)
 
-    _, flagged = result
+    _, _, flagged = result
     assert flagged is False
 
 
@@ -140,7 +141,7 @@ def test_steam_no_median_only_volume_check():
     with patch("producer_lambda.requests.get", return_value=_steam_response("999.00", "10")):
         result = producer_lambda.get_steam_price("AWP | Test", median_7d=None)
 
-    _, flagged = result
+    _, _, flagged = result
     assert flagged is False
 
 
@@ -154,7 +155,7 @@ def test_buy_idempotency_skips_existing_asset():
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
-            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, 100, False)):
                 with patch("producer_lambda.get_nbp_rate", return_value=3.95):
                     producer_lambda.lambda_handler({}, None)
 
@@ -174,7 +175,7 @@ def test_missing_event_type_defaults_to_buy():
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
-            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, 100, False)):
                 with patch("producer_lambda.get_nbp_rate", return_value=3.95):
                     producer_lambda.lambda_handler({}, None)
 
@@ -220,7 +221,7 @@ def test_backfill_mode_uses_event_date():
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
-            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, 100, False)):
                 with patch("producer_lambda.get_nbp_rate", return_value=3.95):
                     producer_lambda.lambda_handler({"date": "2026-01-15"}, None)
 
@@ -241,7 +242,7 @@ def test_exchange_rate_idempotency_skips_existing():
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
-            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, 100, False)):
                 with patch("producer_lambda.get_nbp_rate", return_value=3.95) as mock_nbp:
                     producer_lambda.lambda_handler({}, None)
 
@@ -268,7 +269,7 @@ def test_eur_pln_exchange_rate_fetched():
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
-            with patch("producer_lambda.get_steam_price", return_value=(100.0, False)):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, 100, False)):
                 with patch("producer_lambda.get_nbp_rate", side_effect=[3.95, 4.05]) as mock_nbp:
                     producer_lambda.lambda_handler({}, None)
 
@@ -326,8 +327,9 @@ def test_steam_429_retries_and_succeeds():
             result = producer_lambda.get_steam_price("AWP | Test")
 
     assert result is not None
-    price, flagged = result
+    price, volume, flagged = result
     assert price == 50.0
+    assert volume == 100
     assert flagged is False
     mock_sleep.assert_called_once_with(10)
 
@@ -365,7 +367,7 @@ def test_batch_mode_fetches_only_batch_items():
 
     def _capture_steam(name, **kwargs):
         fetched_names.append(name)
-        return (10.0, False)
+        return (10.0, 100, False)
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": items}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
@@ -402,7 +404,7 @@ def test_batch_mode_assets_written_for_all_items():
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": items}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
-            with patch("producer_lambda.get_steam_price", return_value=(10.0, False)):
+            with patch("producer_lambda.get_steam_price", return_value=(10.0, 100, False)):
                 with patch("producer_lambda.get_nbp_rate", return_value=3.95):
                     # batch_index=0 fetches only items 0-1, but ALL 5 assets should be written
                     producer_lambda.lambda_handler({"batch_index": 0, "batch_size": 2}, None)
@@ -427,7 +429,7 @@ def test_sold_items_excluded_from_price_fetch():
 
     def _capture_steam(name, **kwargs):
         fetched_names.append(name)
-        return (10.0, False)
+        return (10.0, 100, False)
 
     with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [buy_item, sell_item, owned_item]}):
         with patch("producer_lambda.bigquery.Client", return_value=bq):
@@ -461,7 +463,7 @@ def test_retry_missing_fetches_only_missing_items():
 
     def _capture_steam(name, **kwargs):
         fetched_names.append(name)
-        return (10.0, False)
+        return (10.0, 100, False)
 
     def _capture_insert(table_id, rows):
         captured_rows.extend([(table_id, r) for r in rows])
@@ -483,3 +485,35 @@ def test_retry_missing_fetches_only_missing_items():
     # No assets or sales written in retry_missing mode
     assert not any("assets_history" in t for t, _ in captured_rows)
     assert not any("sales_history" in t for t, _ in captured_rows)
+
+
+# ---------------------------------------------------------------------------
+# Test 19 — Steam volume (#69): handler writes volume_7d to volume_history
+# ---------------------------------------------------------------------------
+
+def test_volume_history_written():
+    item = _make_buy_item()
+    bq = _bq_client_mock()
+
+    captured_rows = []
+
+    def _capture_insert(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture_insert
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_steam_price", return_value=(100.0, 42, False)):
+                with patch("producer_lambda.get_nbp_rate", return_value=3.95):
+                    result = producer_lambda.lambda_handler({}, None)
+
+    import json as _json
+    body = _json.loads(result["body"])
+    assert body["volumes_written"] == 1
+
+    volume_rows = [row for table, row in captured_rows if "volume_history" in table]
+    assert len(volume_rows) == 1
+    assert volume_rows[0]["item_id"] == "AWP | Test"
+    assert volume_rows[0]["volume_7d"] == 42
