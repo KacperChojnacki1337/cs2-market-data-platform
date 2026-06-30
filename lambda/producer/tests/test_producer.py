@@ -94,10 +94,11 @@ def test_nbp_weekend_fallback():
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — Steam: volume == 0 → price_flagged = True
+# Test 2 — Steam: volume == 0 does NOT flag price (decoupled per #82) —
+# zero-volume rare items can still have a legitimate, stable price.
 # ---------------------------------------------------------------------------
 
-def test_steam_zero_volume_flagged():
+def test_steam_zero_volume_not_flagged():
     with patch("producer_lambda.requests.get", return_value=_steam_response("100.00", "0")):
         result = producer_lambda.get_steam_price("AWP | Test", median_7d=100.0)
 
@@ -105,7 +106,7 @@ def test_steam_zero_volume_flagged():
     price, volume, flagged = result
     assert price == 100.0
     assert volume == 0
-    assert flagged is True
+    assert flagged is False
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +135,11 @@ def test_steam_below_threshold_not_flagged():
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — Steam: no median provided → only volume check applies
+# Test 5 — Steam: no median provided → never flagged, regardless of volume
 # ---------------------------------------------------------------------------
 
-def test_steam_no_median_only_volume_check():
-    with patch("producer_lambda.requests.get", return_value=_steam_response("999.00", "10")):
+def test_steam_no_median_never_flagged():
+    with patch("producer_lambda.requests.get", return_value=_steam_response("999.00", "0")):
         result = producer_lambda.get_steam_price("AWP | Test", median_7d=None)
 
     _, _, flagged = result
