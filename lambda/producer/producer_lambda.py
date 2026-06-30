@@ -44,8 +44,8 @@ def get_steam_price(market_hash_name, median_7d=None, retries=5, backoff=2):
                     except (ValueError, AttributeError):
                         volume = 0
 
-                    flagged = volume == 0
-                    if not flagged and median_7d is not None and median_7d > 0:
+                    flagged = False
+                    if median_7d is not None and median_7d > 0:
                         deviation = abs(price - median_7d) / median_7d
                         if deviation > 0.5:
                             flagged = True
