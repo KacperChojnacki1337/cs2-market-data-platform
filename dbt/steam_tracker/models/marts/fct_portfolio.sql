@@ -91,7 +91,7 @@ final as (
             else 'HIGH'
         end                                                                 as liquidity_risk,
 
-        -- Skinport prices (alternative market)
+        -- Skinport prices (alternative market, gross — before Skinport's sale fee)
         s.skinport_price_pln,
         round(
             (s.skinport_price_pln - a.buy_price) * a.quantity, 2
@@ -102,6 +102,18 @@ final as (
                 a.buy_price * a.quantity
             ) * 100
         , 2)                                                                as skinport_pnl_pct,
+
+        -- Skinport net value (gross price minus 8% standard Skinport sale fee)
+        round(s.skinport_price_pln * a.quantity * 0.92, 2)                  as net_value_skinport_pln,
+        round(
+            (s.skinport_price_pln * 0.92 - a.buy_price) * a.quantity, 2
+        )                                                                    as net_skinport_pnl_pln,
+        round(
+            safe_divide(
+                (s.skinport_price_pln * 0.92 - a.buy_price) * a.quantity,
+                a.buy_price * a.quantity
+            ) * 100
+        , 2)                                                                as net_skinport_pnl_pct,
 
         -- Accuracy indicator: how close real_cash_coeff is to actual Skinport price
         round(

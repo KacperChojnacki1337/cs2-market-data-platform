@@ -59,6 +59,12 @@ models:
         description: "PnL if sold on Skinport today (skinport_price_pln - buy_price_pln) × quantity"
       - name: skinport_pnl_pct
         description: "PnL % if sold on Skinport today"
+      - name: net_value_skinport_pln
+        description: "Estimated net value if sold on Skinport today (skinport_price_pln × quantity × 0.92, after 8% standard Skinport fee)"
+      - name: net_skinport_pnl_pln
+        description: "Net PnL if sold on Skinport today, after 8% fee: (skinport_price_pln × 0.92 - buy_price_pln) × quantity"
+      - name: net_skinport_pnl_pct
+        description: "Net PnL % if sold on Skinport today, after 8% fee"
       - name: coeff_accuracy
         description: "Accuracy of real_cash_coeff: (Steam price USD × rate × coeff) / Skinport price PLN. Values ~1.0 mean coeff is accurate; >1.0 means pessimistic; <1.0 means optimistic"
       - name: volume_7d
@@ -67,7 +73,7 @@ models:
         description: "Liquidity indicator: LOW (<5 sales/7d), MEDIUM (5-50 sales/7d), HIGH (>50 sales/7d). Low volume = hard to sell at market price"
 
   - name: fct_realized_pnl
-    description: "Realized PnL on closed positions — fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 5%)"
+    description: "Realized PnL on closed positions — fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 8%)"
     columns:
       - name: buy_asset_id
         tests:
@@ -86,7 +92,7 @@ models:
         tests:
           - not_null
       - name: fee_pct
-        description: "Platform fee % derived from sell_channel (Steam=15, CSFloat=2, Skinport=5)"
+        description: "Platform fee % derived from sell_channel (Steam=15, CSFloat=2, Skinport=8)"
         tests:
           - not_null
       - name: fee_amount_pln
