@@ -20,6 +20,14 @@ coeffs as (
     select * from {{ ref('real_cash_coefficients') }}
 ),
 
+skinport_prices as (
+    select * from {{ ref('int_latest_skinport_prices') }}
+),
+
+volume as (
+    select * from {{ ref('int_latest_volume') }}
+),
+
 final as (
     select
         a.asset_sk,
@@ -73,12 +81,54 @@ final as (
                 - (a.buy_price * a.quantity),
                 a.buy_price * a.quantity
             ) * 100
-        , 2)                                                                as real_cash_pnl_pct
+        , 2)                                                                as real_cash_pnl_pct,
+
+        -- Steam volume (liquidity indicator)
+        coalesce(v.volume_7d, 0)                                            as volume_7d,
+        case
+            when coalesce(v.volume_7d, 0) < 5 then 'LOW'
+            when coalesce(v.volume_7d, 0) < 50 then 'MEDIUM'
+            else 'HIGH'
+        end                                                                 as liquidity_risk,
+
+        -- Skinport prices (alternative market, gross — before Skinport's sale fee)
+        s.skinport_price_pln,
+        round(
+            (s.skinport_price_pln - a.buy_price) * a.quantity, 2
+        )                                                                    as skinport_pnl_pln,
+        round(
+            safe_divide(
+                (s.skinport_price_pln - a.buy_price) * a.quantity,
+                a.buy_price * a.quantity
+            ) * 100
+        , 2)                                                                as skinport_pnl_pct,
+
+        -- Skinport net value (gross price minus 8% standard Skinport sale fee)
+        round(s.skinport_price_pln * a.quantity * 0.92, 2)                  as net_value_skinport_pln,
+        round(
+            (s.skinport_price_pln * 0.92 - a.buy_price) * a.quantity, 2
+        )                                                                    as net_skinport_pnl_pln,
+        round(
+            safe_divide(
+                (s.skinport_price_pln * 0.92 - a.buy_price) * a.quantity,
+                a.buy_price * a.quantity
+            ) * 100
+        , 2)                                                                as net_skinport_pnl_pct,
+
+        -- Accuracy indicator: how close real_cash_coeff is to actual Skinport price
+        round(
+            safe_divide(
+                p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65),
+                s.skinport_price_pln
+            ), 4
+        )                                                                    as coeff_accuracy
 
     from assets a
     left join prices p on a.item_id = p.item_id
     left join exchange_rate r on 1 = 1
     left join coeffs c on a.category = c.category
+    left join skinport_prices s on a.item_id = s.item_id
+    left join volume v on a.item_id = v.item_id
     where a.item_id not in (select item_id from sold_items)
 )
 

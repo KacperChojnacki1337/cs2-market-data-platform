@@ -12,7 +12,7 @@ with_fees as (
         case s.sell_channel
             when 'Steam'    then 15.0
             when 'CSFloat'  then 2.0
-            when 'Skinport' then 5.0
+            when 'Skinport' then 8.0
             else 0.0
         end as fee_pct
     from sales s

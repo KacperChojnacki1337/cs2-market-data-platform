@@ -1,4 +1,4 @@
-﻿# ==========================================
+# ==========================================
 # 1. AWS: DynamoDB - Inventory (Source of Truth)
 # ==========================================
 resource "aws_dynamodb_table" "inventory_metadata" {
@@ -294,6 +294,87 @@ resource "google_bigquery_table" "dev_sales" {
 EOF
 }
 
+# --- Raw Table: Skinport Prices (Bronze) ---
+# Second price source for portfolio analysis (Skinport API data)
+resource "google_bigquery_table" "raw_skinport_prices" {
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "skinport_prices_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",             "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (must match Steam item_id for joining)"},
+  {"name": "skinport_price_pln",  "type": "FLOAT",     "mode": "NULLABLE", "description": "Skinport marketplace price in PLN"},
+  {"name": "timestamp",           "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this price"}
+]
+EOF
+}
+
+# --- Dev Table: Skinport Prices (Bronze Dev) ---
+resource "google_bigquery_table" "dev_skinport_prices" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "skinport_prices_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",             "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (must match Steam item_id for joining)"},
+  {"name": "skinport_price_pln",  "type": "FLOAT",     "mode": "NULLABLE", "description": "Skinport marketplace price in PLN"},
+  {"name": "timestamp",           "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this price"}
+]
+EOF
+}
+
+# --- Prod Table: Steam Volume History (Bronze) ---
+resource "google_bigquery_table" "raw_volume_history" {
+  dataset_id          = google_bigquery_dataset.raw_dataset.dataset_id
+  table_id            = "volume_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",    "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (Steam item identifier)"},
+  {"name": "volume_7d",  "type": "INTEGER",   "mode": "NULLABLE", "description": "7-day trade volume (sales count) from Steam Market"},
+  {"name": "timestamp",  "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this volume"}
+]
+EOF
+}
+
+# --- Dev Table: Steam Volume History (Bronze Dev) ---
+resource "google_bigquery_table" "dev_volume_history" {
+  dataset_id          = google_bigquery_dataset.raw_dataset_dev.dataset_id
+  table_id            = "volume_history"
+  deletion_protection = false
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = <<EOF
+[
+  {"name": "item_id",    "type": "STRING",    "mode": "REQUIRED", "description": "Market hash name (Steam item identifier)"},
+  {"name": "volume_7d",  "type": "INTEGER",   "mode": "NULLABLE", "description": "7-day trade volume (sales count) from Steam Market"},
+  {"name": "timestamp",  "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When Lambda fetched this volume"}
+]
+EOF
+}
+
 # ==========================================
 # 3. IAM: Producer Lambda Permissions
 # ==========================================
@@ -373,6 +454,10 @@ resource "aws_lambda_layer_version" "python_libs" {
   filename            = data.archive_file.lambda_layer_zip.output_path
   layer_name          = "steam_tracker_libs"
   compatible_runtimes = ["python3.11"]
+
+  # Without this, Terraform only tracks the (constant) zip filename, so changes to
+  # the layer contents (e.g. adding the brotli package) never publish a new version.
+  source_code_hash = data.archive_file.lambda_layer_zip.output_base64sha256
 }
 
 resource "aws_lambda_function" "steam_producer" {
@@ -391,6 +476,39 @@ resource "aws_lambda_function" "steam_producer" {
   environment {
     variables = {
       DYNAMODB_TABLE = aws_dynamodb_table.inventory_metadata.name
+      GCP_PROJECT_ID = var.gcp_project_id
+      BQ_DATASET_RAW = "steam_raw"
+      GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
+    }
+  }
+}
+
+# --- Skinport price producer ---
+# Reads owned item_ids from steam_marts.dim_assets, fetches Skinport market prices,
+# writes to steam_raw.skinport_prices_history. Reuses the shared python_libs layer
+# (same deps: google-cloud-bigquery, google-auth, requests) and the producer IAM role
+# (needs SSM read for the GCP key + CloudWatch logs; does not touch DynamoDB).
+data "archive_file" "skinport_code_zip" {
+  type        = "zip"
+  source_file = "../lambda/skinport/skinport_lambda.py"
+  output_path = "skinport_lambda.zip"
+}
+
+resource "aws_lambda_function" "skinport_producer" {
+  filename      = data.archive_file.skinport_code_zip.output_path
+  function_name = "skinport_price_producer"
+  role          = aws_iam_role.lambda_exec_role.arn
+  handler       = "skinport_lambda.lambda_handler"
+  runtime       = "python3.11"
+  timeout       = 300
+  memory_size   = 256
+
+  layers = [aws_lambda_layer_version.python_libs.arn]
+
+  source_code_hash = data.archive_file.skinport_code_zip.output_base64sha256
+
+  environment {
+    variables = {
       GCP_PROJECT_ID = var.gcp_project_id
       BQ_DATASET_RAW = "steam_raw"
       GCP_KEY_PARAM  = "/steam-tracker/gcp-key"
@@ -459,6 +577,29 @@ resource "aws_lambda_permission" "allow_eventbridge_retry_missing" {
   source_arn    = aws_cloudwatch_event_rule.producer_retry_missing.arn
 }
 
+# --- Skinport: daily fetch at 07:00 UTC (parallel with Steam) ---
+# TEMPORARY: this rule is removed in #70 Phase 3 (Airflow cutover), where Airflow
+# invokes the Skinport Lambda via boto3 as part of the fan-out. Kept now so Skinport
+# prices start populating in production immediately, before Airflow exists.
+resource "aws_cloudwatch_event_rule" "skinport_daily" {
+  name                = "skinport-producer-daily"
+  description         = "Skinport price fetch at 07:00 UTC — TEMPORARY, replaced by Airflow (#70)"
+  schedule_expression = "cron(0 7 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "skinport_daily" {
+  rule = aws_cloudwatch_event_rule.skinport_daily.name
+  arn  = aws_lambda_function.skinport_producer.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_skinport" {
+  statement_id  = "AllowEventBridgeSkinport"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.skinport_producer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.skinport_daily.arn
+}
+
 # ==========================================
 # 6. CloudWatch: Alarms + SNS Notifications
 # ==========================================
@@ -475,10 +616,10 @@ resource "aws_sns_topic_subscription" "email" {
 
 # --- Producer Lambda: Errors ---
 resource "aws_cloudwatch_metric_alarm" "producer_errors" {
-  alarm_name          = "steam-producer-errors"
-  alarm_description   = "Producer Lambda is throwing errors"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Errors"
+  alarm_name        = "steam-producer-errors"
+  alarm_description = "Producer Lambda is throwing errors"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Errors"
   dimensions = {
     FunctionName = aws_lambda_function.steam_producer.function_name
   }
@@ -579,10 +720,10 @@ resource "aws_budgets_budget" "monthly_budget" {
 
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
-  alarm_name          = "steam-producer-duration"
-  alarm_description   = "Producer Lambda duration exceeds 80% of timeout (480s of 600s)"
-  namespace           = "AWS/Lambda"
-  metric_name         = "Duration"
+  alarm_name        = "steam-producer-duration"
+  alarm_description = "Producer Lambda duration exceeds 80% of timeout (480s of 600s)"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Duration"
   dimensions = {
     FunctionName = aws_lambda_function.steam_producer.function_name
   }

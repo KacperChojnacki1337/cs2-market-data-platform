@@ -229,7 +229,7 @@ aws dynamodb put-item \
     "sell_channel": {"S": "CSFloat"},
     "updated_at": {"S": "2026-03-01T00:00:00Z"}
   }'
-# sell_channel values: "Steam" (15% fee), "CSFloat" (2%), "Skinport" (5%), "Unknown" (0%)
+# sell_channel values: "Steam" (15% fee), "CSFloat" (2%), "Skinport" (8%), "Unknown" (0%)
 # sell_price must always be in PLN (convert manually if platform pays in USD)
 ```
 
@@ -284,7 +284,7 @@ All tables partitioned by `DATE(timestamp)`.
   - Enables time-series charts in Looker Studio; sold positions excluded via time-aware LEFT JOIN anti-join (`sell_date <= snapshot_date`)
 - `fct_realized_pnl` â€” realized PnL on closed positions:
   - Joins `dim_assets` Ă— `stg_sales` by `item_id`
-  - `fee_pct` derived from `sell_channel`: Steam=15%, CSFloat=2%, Skinport=5%, Unknown=0%
+  - `fee_pct` derived from `sell_channel`: Steam=15%, CSFloat=2%, Skinport=8%, Unknown=0%
   - `gross_sell_price_pln` â€” sell price before fee
   - `fee_amount_pln = gross_sell_price_pln Ă— fee_pct / 100`
   - `net_sell_price_pln = gross_sell_price_pln Ă— (1 - fee_pct / 100)`
