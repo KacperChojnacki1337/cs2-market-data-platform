@@ -86,19 +86,19 @@ jobs:
 
       - name: dbt deps
         working-directory: dbt/steam_tracker
-        run: dbt deps
+        run: dbt deps --profiles-dir ~/.dbt
 
       - name: dbt seed
         working-directory: dbt/steam_tracker
-        run: dbt seed --target dev
+        run: dbt seed --target dev --profiles-dir ~/.dbt
 
       - name: dbt run (dev)
         working-directory: dbt/steam_tracker
-        run: dbt run --target dev
+        run: dbt run --target dev --profiles-dir ~/.dbt
 
       - name: dbt test (dev)
         working-directory: dbt/steam_tracker
-        run: dbt test --target dev
+        run: dbt test --target dev --profiles-dir ~/.dbt
 
   # -----------------------------------------------------------------------
   # Prod job: runs on push to main (dbt/** changed), schedule, or manual
@@ -168,23 +168,23 @@ jobs:
 
       - name: dbt deps
         working-directory: dbt/steam_tracker
-        run: dbt deps
+        run: dbt deps --profiles-dir ~/.dbt
 
       - name: dbt seed
         working-directory: dbt/steam_tracker
-        run: dbt seed --target prod
+        run: dbt seed --target prod --profiles-dir ~/.dbt
 
       - name: dbt run (prod)
         working-directory: dbt/steam_tracker
-        run: dbt run --target prod
+        run: dbt run --target prod --profiles-dir ~/.dbt
 
       - name: dbt test (prod)
         working-directory: dbt/steam_tracker
-        run: dbt test --target prod
+        run: dbt test --target prod --profiles-dir ~/.dbt
 
       - name: dbt docs generate
         working-directory: dbt/steam_tracker
-        run: dbt docs generate
+        run: dbt docs generate --profiles-dir ~/.dbt
 
       - name: Upload dbt docs as artifact
         uses: actions/upload-artifact@v4
