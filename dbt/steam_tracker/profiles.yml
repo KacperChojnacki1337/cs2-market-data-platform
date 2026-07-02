@@ -1,0 +1,21 @@
+steam_tracker:
+  outputs:
+    prod:
+      type: bigquery
+      method: service-account
+      project: steam-tracker-portfolio
+      dataset: steam_raw
+      keyfile: /opt/airflow/gcp-key.json
+      location: EU
+      threads: 4
+      timeout_seconds: 300
+    dev:
+      type: bigquery
+      method: service-account
+      project: steam-tracker-portfolio
+      dataset: steam_raw_dev
+      keyfile: /opt/airflow/gcp-key.json
+      location: EU
+      threads: 4
+      timeout_seconds: 300
+  target: prod
