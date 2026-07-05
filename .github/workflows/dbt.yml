@@ -147,6 +147,7 @@ jobs:
           EOF
 
       - name: Data freshness check
+        if: github.event_name == 'schedule'
         run: |
           python3 - <<'EOF'
           import sys
