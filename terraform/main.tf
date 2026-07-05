@@ -718,6 +718,26 @@ resource "aws_budgets_budget" "monthly_budget" {
   }
 }
 
+# --- Skinport Lambda: Errors ---
+# Without this, a failing Skinport fetch is silent — fct_portfolio just shows
+# NULL Skinport columns with no signal that the source is broken.
+resource "aws_cloudwatch_metric_alarm" "skinport_errors" {
+  alarm_name        = "skinport-producer-errors"
+  alarm_description = "Skinport Lambda is throwing errors"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Errors"
+  dimensions = {
+    FunctionName = aws_lambda_function.skinport_producer.function_name
+  }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
 # --- Producer Lambda: Duration (timeout risk) ---
 resource "aws_cloudwatch_metric_alarm" "producer_duration" {
   alarm_name        = "steam-producer-duration"
