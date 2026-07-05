@@ -186,22 +186,26 @@ aws dynamodb put-item --table-name steam_inventory_metadata --item '{
 
 **Bronze** — `steam_raw`: `assets_history`, `sales_history`, `prices_history`, `volume_history`, `exchange_rates`. All partitioned by `DATE(timestamp)`.
 
-**Silver** — `steam_staging` (dbt views): `stg_assets`, `stg_sales`, `stg_prices`, `stg_exchange_rates`, `int_latest_prices` (ROW_NUMBER dedup), `int_latest_exchange_rate`.
+**Silver** — `steam_staging` (dbt views): `stg_assets`, `stg_sales`, `stg_prices`, `stg_exchange_rates`, `int_latest_prices` (ROW_NUMBER dedup), `int_latest_exchange_rate`, `int_latest_skinport_prices`, `int_latest_volume`, `int_fifo_units` (FIFO buy-to-sale unit matching).
 
 **Gold** — `steam_marts` (dbt tables, full rebuild on every run):
 - `dim_assets` — deduplicated buy dimension, surrogate key via `dbt_utils.generate_surrogate_key`
-- `fct_portfolio` — unrealized PnL per active position. Key columns:
+- `fct_portfolio` — unrealized PnL per active position (one row per held buy lot; `quantity` = FIFO `remaining_qty`, unsold units only). Key columns:
   - Steam: `current_value_pln`, `pnl_total_pln`, `pnl_pct`, `net_value_steam_pln` (×0.85)
   - CSFloat: `real_cash_value_pln` (×`real_cash_coeff`), `real_cash_pnl_pln/pct`
   - Skinport: `skinport_price_pln` (gross), `net_value_skinport_pln` (×0.92), `net_skinport_pnl_pln/pct`
   - Liquidity: `volume_7d`, `liquidity_risk` (LOW/MEDIUM/HIGH), `coeff_accuracy`
   - real_cash_coeff per category: Knife=0.83, Gloves=0.80, Skin/Case=0.74, Agent=0.60, Sticker=0.49, Other=0.65
-- `fct_portfolio_history` — daily snapshots (incremental, partitioned by `snapshot_date`); sold positions excluded via time-aware anti-join
-- `fct_realized_pnl` — closed positions; fee from `sell_channel` (Steam=15%, CSFloat=2%, Skinport=8%, Unknown=0%); `net_sell_price_pln`, `realized_pnl_pln/pct`, `holding_period_days`
+- `fct_portfolio_history` — daily snapshots (full-rebuild table, partitioned by `snapshot_date`); FIFO time-aware holdings — a lot's held units per day = units bought minus units sold as-of that date
+- `fct_realized_pnl` — closed positions, grain = (sale × buy lot) via FIFO; fee from `sell_channel` (Steam=15%, CSFloat=2%, Skinport=8%, Unknown=0%); `units_sold_from_lot`, `net_sell_price_pln`, `realized_pnl_pln/pct`, `holding_period_days`
 
 ### Steam Data Quality
 
 `price_flagged = TRUE` if price deviates >50% from 7-day median. Volume=0 alone does NOT flag (rare items can have 0 weekly sales with a valid price — #82). Flagged prices are stored but excluded from `int_latest_prices`. `fct_portfolio` shows NULL for items with no valid price.
+
+### Sale Matching (FIFO)
+
+Sales link to buy lots by **FIFO unit matching** in `int_fifo_units`, not by `item_id` (which double-counted PnL and dropped held units when an item had multiple buy lots). Buy lots and sales are exploded into individual units, numbered per item by date, and matched unit-to-unit — oldest lot consumed first. A cross-lot sale splits across lots, each priced by its own buy cost. No DynamoDB/Lambda change; the minimal sell event is sufficient. Guards: oversell test (`tests/assert_no_oversell.sql`), `holding_period_days ≥ 0`, `quantity ≥ 1` on buys/sales, sale `item_id` → `dim_assets` relationship. Known limitation: same-day same-item lots at different prices under a partial sale use an arbitrary but deterministic tie-break (total PnL conserved; only cost-basis attribution differs).
 
 ### Lambda Mode Dispatch (`producer_lambda.py`)
 
