@@ -1,0 +1,2 @@
+apache-airflow-providers-amazon==8.29.0
+dbt-bigquery==1.8.0

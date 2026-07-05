@@ -518,3 +518,129 @@ def test_volume_history_written():
     assert len(volume_rows) == 1
     assert volume_rows[0]["item_id"] == "AWP | Test"
     assert volume_rows[0]["volume_7d"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Test 20 — mode=sync_inventory: writes assets/sales only, no prices or exchange_rates
+# ---------------------------------------------------------------------------
+
+def test_sync_inventory_mode_writes_only_assets_and_sales():
+    buy_item  = _make_buy_item(asset_id="uuid-new-buy")
+    sell_item = _make_sell_item(asset_id="uuid-new-sell")
+    bq = _bq_client_mock()
+    captured_rows = []
+
+    def _capture(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [buy_item, sell_item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            import json as _json
+            result = producer_lambda.lambda_handler({"mode": "sync_inventory"}, None)
+
+    body = _json.loads(result["body"])
+    assert body["assets_written"] == 1
+    assert body["sales_written"] == 1
+    assert not any("prices_history" in t for t, _ in captured_rows)
+    assert not any("exchange_rates" in t for t, _ in captured_rows)
+    assert any("assets_history" in t for t, _ in captured_rows)
+    assert any("sales_history" in t for t, _ in captured_rows)
+
+
+# ---------------------------------------------------------------------------
+# Test 21 — mode=sync_inventory: idempotency preserved — existing assets skipped
+# ---------------------------------------------------------------------------
+
+def test_sync_inventory_mode_skips_existing_assets():
+    item = _make_buy_item(asset_id="uuid-already-in-bq")
+    bq = _bq_client_mock(existing_asset_ids=["uuid-already-in-bq"])
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": [item]}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            import json as _json
+            result = producer_lambda.lambda_handler({"mode": "sync_inventory"}, None)
+
+    body = _json.loads(result["body"])
+    assert body["assets_written"] == 0
+    insert_calls = [str(c) for c in bq.insert_rows_json.call_args_list]
+    assert not any("assets_history" in c for c in insert_calls)
+
+
+# ---------------------------------------------------------------------------
+# Test 22 — mode=exchange_rates: writes only exchange rates, no assets or prices
+# ---------------------------------------------------------------------------
+
+def test_exchange_rates_mode_writes_only_rates():
+    bq = _bq_client_mock(existing_exchange_rate_rows=0)
+    captured_rows = []
+
+    def _capture(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture
+
+    with patch("producer_lambda.bigquery.Client", return_value=bq):
+        with patch("producer_lambda.get_nbp_rate", side_effect=[3.95, 4.05]):
+            import json as _json
+            result = producer_lambda.lambda_handler({"mode": "exchange_rates"}, None)
+
+    body = _json.loads(result["body"])
+    assert body["exchange_rates_written"] == 2
+    assert not any("assets_history" in t for t, _ in captured_rows)
+    assert not any("prices_history" in t for t, _ in captured_rows)
+    rate_rows = [r for t, r in captured_rows if "exchange_rates" in t]
+    assert len(rate_rows) == 2
+    assert {"USD", "EUR"} == {r["from_currency"] for r in rate_rows}
+
+
+# ---------------------------------------------------------------------------
+# Test 23 — mode=exchange_rates: skips NBP call if rate already exists for today
+# ---------------------------------------------------------------------------
+
+def test_exchange_rates_mode_skips_if_rate_exists():
+    bq = _bq_client_mock(existing_exchange_rate_rows=2)
+
+    with patch("producer_lambda.bigquery.Client", return_value=bq):
+        with patch("producer_lambda.get_nbp_rate") as mock_nbp:
+            import json as _json
+            result = producer_lambda.lambda_handler({"mode": "exchange_rates"}, None)
+
+    body = _json.loads(result["body"])
+    assert body["exchange_rates_written"] == 0
+    mock_nbp.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test 24 — mode=batch_prices: writes only prices/volumes for batch slice, no assets/rates
+# ---------------------------------------------------------------------------
+
+def test_batch_prices_mode_writes_only_prices_for_slice():
+    items = [_make_buy_item(asset_id=f"uuid-{i}", item_id=f"Item{i} | Skin") for i in range(6)]
+    bq = _bq_client_mock()
+    captured_rows = []
+
+    def _capture(table_id, rows):
+        captured_rows.extend([(table_id, r) for r in rows])
+        return []
+
+    bq.insert_rows_json.side_effect = _capture
+
+    with patch.object(producer_lambda.inventory_table, "scan", return_value={"Items": items}):
+        with patch("producer_lambda.bigquery.Client", return_value=bq):
+            with patch("producer_lambda.get_steam_price", return_value=(10.0, 50, False)):
+                import json as _json
+                result = producer_lambda.lambda_handler(
+                    {"mode": "batch_prices", "batch_index": 0, "batch_size": 3}, None
+                )
+
+    body = _json.loads(result["body"])
+    assert body["prices_written"] == 3
+    assert body["volumes_written"] == 3
+    assert not any("assets_history" in t for t, _ in captured_rows)
+    assert not any("exchange_rates" in t for t, _ in captured_rows)
+    assert any("prices_history" in t for t, _ in captured_rows)
+    assert any("volume_history" in t for t, _ in captured_rows)
