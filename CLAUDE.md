@@ -219,14 +219,14 @@ Airflow DAG invokes the first 3 modes as single-responsibility tasks. EventBridg
 
 ## Critical Implementation Details
 
-- **Lambda timeout**: 300s / Memory: 256 MB
+- **Lambda timeout**: 600s / Memory: 256 MB
 - **GCP key**: fetched from SSM (`/steam-tracker/gcp-key`) and cached at module level
 - **NBP fallback**: `/today/` → 404 on weekends/holidays → `/last/1/`
 - **Steam retry**: 5 attempts, 10/20/30/40s backoff on 429
 - **Idempotency**: assets/sales protected by `SELECT DISTINCT asset_id` pre-check; prices/exchange_rates deduped by `ROW_NUMBER()` in silver; `DOUBLE_FIRE_DETECTED` log for non-batch re-runs (non-blocking)
 - **Backfill**: `event["date"]` → all BQ timestamps use `{date}T12:00:00+00:00`
 - **Lambda layer**: `google-cloud-bigquery`, `google-auth`, `requests`, `brotli` (Skinport API requires `Accept-Encoding: br`)
-- **CloudWatch alarms**: errors, duration >240s, data freshness at 07:30 UTC
+- **CloudWatch alarms**: errors, duration >480s (80% of 600s timeout). Data freshness is enforced in GitHub Actions (pre-run check), not as a CloudWatch alarm
 - **GH Actions freshness check**: `COUNT(*) FROM prices_history WHERE DATE(timestamp) = CURRENT_DATE()` — aborts dbt if 0
 
 ## Secret Rotation

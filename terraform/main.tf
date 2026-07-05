@@ -646,7 +646,7 @@ resource "google_monitoring_notification_channel" "email" {
   }
 }
 
-# --- GCP: Monthly budget $5 with alerts at 25%, 50%, 100% ---
+# --- GCP: Monthly budget 25 PLN with alerts at 25%, 50%, 100% ---
 resource "google_billing_budget" "monthly_budget" {
   billing_account = var.billing_account_id
   display_name    = "Steam Tracker Monthly Budget"
@@ -716,6 +716,26 @@ resource "aws_budgets_budget" "monthly_budget" {
     notification_type          = "ACTUAL"
     subscriber_email_addresses = [var.alert_email]
   }
+}
+
+# --- Skinport Lambda: Errors ---
+# Without this, a failing Skinport fetch is silent — fct_portfolio just shows
+# NULL Skinport columns with no signal that the source is broken.
+resource "aws_cloudwatch_metric_alarm" "skinport_errors" {
+  alarm_name        = "skinport-producer-errors"
+  alarm_description = "Skinport Lambda is throwing errors"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Errors"
+  dimensions = {
+    FunctionName = aws_lambda_function.skinport_producer.function_name
+  }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
 # --- Producer Lambda: Duration (timeout risk) ---
