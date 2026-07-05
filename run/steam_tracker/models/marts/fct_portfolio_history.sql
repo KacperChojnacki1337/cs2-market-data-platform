@@ -12,14 +12,38 @@
     as (
       
 
+-- Daily portfolio snapshots with FIFO time-aware holdings.
+--
+-- The old model excluded an item entirely once any sale of it existed before the
+-- snapshot (item_id anti-join) — wrong for multi-lot and partially-sold items.
+-- Here we compute held quantity per lot as-of each date: FIFO consumes the
+-- oldest lots first, so a lot's sold portion at date D is
+-- (units_sold_by_D - units_in_earlier_lots), clamped to the lot size.
+
 with price_dates as (
     select distinct DATE(timestamp) as snapshot_date
     from `steam-tracker-portfolio`.`steam_raw`.`prices_history`
 ),
 
-all_items as (
-    select distinct item_id
+-- Buy lots with their FIFO position range (prev_cum, prev_cum + quantity]
+lots as (
+    select
+        asset_id,
+        item_id,
+        buy_date,
+        buy_price,
+        category,
+        quantity,
+        coalesce(sum(quantity) over (
+            partition by item_id
+            order by buy_date, asset_id
+            rows between unbounded preceding and 1 preceding
+        ), 0) as prev_cum
     from `steam-tracker-portfolio`.`steam_marts`.`dim_assets`
+),
+
+all_items as (
+    select distinct item_id from lots
 ),
 
 daily_prices as (
@@ -86,9 +110,44 @@ rates_filled as (
     )
 ),
 
-sales as (
-    select item_id, sell_date
+sales_agg as (
+    select item_id, sell_date, sum(quantity) as sold_qty
     from `steam-tracker-portfolio`.`steam_staging`.`stg_sales`
+    group by item_id, sell_date
+),
+
+-- Cumulative units sold per item as of each snapshot date
+sold_by_date as (
+    select
+        pd.snapshot_date,
+        ai.item_id,
+        coalesce(sum(
+            case when sa.sell_date <= pd.snapshot_date then sa.sold_qty end
+        ), 0) as sold_by_d
+    from price_dates pd
+    cross join all_items ai
+    left join sales_agg sa on sa.item_id = ai.item_id
+    group by pd.snapshot_date, ai.item_id
+),
+
+-- Held units per lot per snapshot (FIFO: oldest lots consumed first)
+lot_snapshots as (
+    select
+        pd.snapshot_date,
+        l.item_id,
+        l.asset_id,
+        l.buy_price,
+        l.category,
+        case
+            when l.buy_date <= pd.snapshot_date
+            then l.quantity - least(l.quantity, greatest(0, sd.sold_by_d - l.prev_cum))
+            else 0
+        end as held_qty
+    from price_dates pd
+    cross join lots l
+    join sold_by_date sd
+        on  sd.item_id       = l.item_id
+        and sd.snapshot_date = pd.snapshot_date
 ),
 
 coeffs as (
@@ -96,32 +155,31 @@ coeffs as (
 )
 
 select
-    pf.snapshot_date,
-    round(sum(a.quantity * pf.price_usd), 2)                              as portfolio_value_usd,
-    round(sum(a.quantity * pf.price_usd * r.usd_pln_rate), 2)            as portfolio_value_pln,
-    round(sum(cast(a.buy_price as float64) * a.quantity), 2)              as total_cost_pln,
+    ls.snapshot_date,
+    round(sum(ls.held_qty * pf.price_usd), 2)                            as portfolio_value_usd,
+    round(sum(ls.held_qty * pf.price_usd * r.usd_pln_rate), 2)           as portfolio_value_pln,
+    round(sum(cast(ls.buy_price as float64) * ls.held_qty), 2)           as total_cost_pln,
     round(
-        sum(a.quantity * pf.price_usd * r.usd_pln_rate)
-        - sum(cast(a.buy_price as float64) * a.quantity), 2
-    )                                                                      as unrealized_pnl_pln,
+        sum(ls.held_qty * pf.price_usd * r.usd_pln_rate)
+        - sum(cast(ls.buy_price as float64) * ls.held_qty), 2
+    )                                                                     as unrealized_pnl_pln,
     round(safe_divide(
-        sum(a.quantity * pf.price_usd * r.usd_pln_rate)
-            - sum(cast(a.buy_price as float64) * a.quantity),
-        sum(cast(a.buy_price as float64) * a.quantity)
-    ) * 100, 2)                                                            as unrealized_pnl_pct,
-    count(distinct a.asset_id)                                             as active_positions,
+        sum(ls.held_qty * pf.price_usd * r.usd_pln_rate)
+            - sum(cast(ls.buy_price as float64) * ls.held_qty),
+        sum(cast(ls.buy_price as float64) * ls.held_qty)
+    ) * 100, 2)                                                           as unrealized_pnl_pct,
+    count(distinct case when ls.held_qty > 0 then ls.asset_id end)       as active_positions,
     r.usd_pln_rate,
     round(
-        sum(a.quantity * pf.price_usd * r.usd_pln_rate * coalesce(c.real_cash_coeff, 0.65))
-    , 2)                                                                    as real_cash_portfolio_value_pln
-from prices_filled                  pf
-join `steam-tracker-portfolio`.`steam_marts`.`dim_assets`         a   on  pf.item_id       = a.item_id
-join rates_filled                    r   on  pf.snapshot_date = r.snapshot_date
-left join sales                   sold   on  a.item_id        = sold.item_id
-    and sold.sell_date <= pf.snapshot_date
-left join coeffs                     c   on  a.category       = c.category
-where sold.item_id is null
+        sum(ls.held_qty * pf.price_usd * r.usd_pln_rate * coalesce(c.real_cash_coeff, 0.65))
+    , 2)                                                                  as real_cash_portfolio_value_pln
+from lot_snapshots                   ls
+join prices_filled                   pf   on  pf.item_id       = ls.item_id
+    and pf.snapshot_date = ls.snapshot_date
+join rates_filled                    r    on  r.snapshot_date  = ls.snapshot_date
+left join coeffs                     c    on  ls.category      = c.category
+where ls.held_qty > 0
   and pf.price_usd is not null
-group by pf.snapshot_date, r.usd_pln_rate
+group by ls.snapshot_date, r.usd_pln_rate
     );
   
