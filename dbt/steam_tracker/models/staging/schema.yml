@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: stg_assets
+    description: "Cleaned buy events from assets_history"
+    columns:
+      - name: asset_id
+        tests:
+          - not_null
+      - name: item_id
+        tests:
+          - not_null
+      - name: quantity
+        description: "Units bought in this lot (must be a positive integer for FIFO explosion)"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              inclusive: true
+
+  - name: stg_sales
+    description: "Cleaned sell events from sales_history"
+    columns:
+      - name: asset_id
+        tests:
+          - not_null
+      - name: item_id
+        description: "Must correspond to a bought item (no orphan sales)"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_assets')
+              field: item_id
+      - name: quantity
+        description: "Units sold in this event (must be a positive integer for FIFO explosion)"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              inclusive: true

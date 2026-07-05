@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: int_fifo_units
+    description: "FIFO unit-level matching between buy lots and sales. One row per bought unit, flagged sold/held. Downstream: fct_realized_pnl, fct_portfolio, fct_portfolio_history."
+    columns:
+      - name: item_id
+        tests:
+          - not_null
+      - name: unit_seq
+        description: "Global FIFO sequence of the unit within its item (buy_date order)"
+        tests:
+          - not_null
+      - name: buy_asset_id
+        description: "asset_id of the buy lot this unit belongs to"
+        tests:
+          - not_null
+      - name: is_sold
+        description: "True if this unit has been matched to a sale unit"
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - item_id
+            - unit_seq
