@@ -12,8 +12,16 @@ exchange_rate as (
     and to_currency = 'PLN'
 ),
 
-sold_items as (
-    select distinct item_id from {{ ref('stg_sales') }}
+-- Units still held per buy lot (FIFO: sold units removed oldest-first).
+-- Replaces the old item_id-based exclusion, which dropped every lot of a
+-- partially-sold item instead of only the sold units.
+held as (
+    select
+        buy_asset_id      as asset_id,
+        count(*)          as remaining_qty
+    from {{ ref('int_fifo_units') }}
+    where not is_sold
+    group by buy_asset_id
 ),
 
 coeffs as (
@@ -36,7 +44,8 @@ final as (
         a.buy_date,
         a.buy_price                                                         as buy_price_pln,
         a.buy_currency,
-        a.quantity,
+        h.remaining_qty                                                     as quantity,
+        a.quantity                                                          as buy_quantity,
         a.category,
         a.purchase_channel,
 
@@ -47,13 +56,13 @@ final as (
         r.rate                                                              as usd_pln_rate,
         r.rate_fetched_at,
 
-        -- Portfolio value
-        round(p.price_usd * a.quantity, 2)                                  as current_value_usd,
-        round(p.price_usd * r.rate * a.quantity, 2)                         as current_value_pln,
+        -- Portfolio value (only units still held)
+        round(p.price_usd * h.remaining_qty, 2)                             as current_value_usd,
+        round(p.price_usd * r.rate * h.remaining_qty, 2)                    as current_value_pln,
 
         -- Unrealized PnL in PLN (buy and current both in PLN)
         round((p.price_usd * r.rate) - a.buy_price, 2)                     as pnl_per_unit_pln,
-        round(((p.price_usd * r.rate) - a.buy_price) * a.quantity, 2)      as pnl_total_pln,
+        round(((p.price_usd * r.rate) - a.buy_price) * h.remaining_qty, 2) as pnl_total_pln,
 
         -- Unrealized PnL %
         round(
@@ -61,25 +70,25 @@ final as (
         , 2)                                                                as pnl_pct,
 
         -- Steam net value (gross price minus 15% Steam fee)
-        round(p.price_usd * a.quantity * 0.85, 2)                          as net_value_steam_usd,
-        round(p.price_usd * r.rate * a.quantity * 0.85, 2)                 as net_value_steam_pln,
-        round(((p.price_usd * r.rate * 0.85) - a.buy_price) * a.quantity, 2) as net_pnl_steam_pln,
+        round(p.price_usd * h.remaining_qty * 0.85, 2)                     as net_value_steam_usd,
+        round(p.price_usd * r.rate * h.remaining_qty * 0.85, 2)            as net_value_steam_pln,
+        round(((p.price_usd * r.rate * 0.85) - a.buy_price) * h.remaining_qty, 2) as net_pnl_steam_pln,
         round(
             safe_divide((p.price_usd * r.rate * 0.85) - a.buy_price, a.buy_price) * 100
         , 2)                                                                as net_pnl_pct_steam,
 
         -- Real cash value (CSFloat sale: price_usd × rate × quantity × coeff)
         coalesce(c.real_cash_coeff, 0.65)                                   as real_cash_coeff,
-        round(p.price_usd * r.rate * a.quantity * coalesce(c.real_cash_coeff, 0.65), 2) as real_cash_value_pln,
+        round(p.price_usd * r.rate * h.remaining_qty * coalesce(c.real_cash_coeff, 0.65), 2) as real_cash_value_pln,
         round(
-            (p.price_usd * r.rate * a.quantity * coalesce(c.real_cash_coeff, 0.65))
-            - (a.buy_price * a.quantity)
+            (p.price_usd * r.rate * h.remaining_qty * coalesce(c.real_cash_coeff, 0.65))
+            - (a.buy_price * h.remaining_qty)
         , 2)                                                                as real_cash_pnl_pln,
         round(
             safe_divide(
-                (p.price_usd * r.rate * a.quantity * coalesce(c.real_cash_coeff, 0.65))
-                - (a.buy_price * a.quantity),
-                a.buy_price * a.quantity
+                (p.price_usd * r.rate * h.remaining_qty * coalesce(c.real_cash_coeff, 0.65))
+                - (a.buy_price * h.remaining_qty),
+                a.buy_price * h.remaining_qty
             ) * 100
         , 2)                                                                as real_cash_pnl_pct,
 
@@ -94,24 +103,24 @@ final as (
         -- Skinport prices (alternative market, gross — before Skinport's sale fee)
         s.skinport_price_pln,
         round(
-            (s.skinport_price_pln - a.buy_price) * a.quantity, 2
+            (s.skinport_price_pln - a.buy_price) * h.remaining_qty, 2
         )                                                                    as skinport_pnl_pln,
         round(
             safe_divide(
-                (s.skinport_price_pln - a.buy_price) * a.quantity,
-                a.buy_price * a.quantity
+                (s.skinport_price_pln - a.buy_price) * h.remaining_qty,
+                a.buy_price * h.remaining_qty
             ) * 100
         , 2)                                                                as skinport_pnl_pct,
 
         -- Skinport net value (gross price minus 8% standard Skinport sale fee)
-        round(s.skinport_price_pln * a.quantity * 0.92, 2)                  as net_value_skinport_pln,
+        round(s.skinport_price_pln * h.remaining_qty * 0.92, 2)             as net_value_skinport_pln,
         round(
-            (s.skinport_price_pln * 0.92 - a.buy_price) * a.quantity, 2
+            (s.skinport_price_pln * 0.92 - a.buy_price) * h.remaining_qty, 2
         )                                                                    as net_skinport_pnl_pln,
         round(
             safe_divide(
-                (s.skinport_price_pln * 0.92 - a.buy_price) * a.quantity,
-                a.buy_price * a.quantity
+                (s.skinport_price_pln * 0.92 - a.buy_price) * h.remaining_qty,
+                a.buy_price * h.remaining_qty
             ) * 100
         , 2)                                                                as net_skinport_pnl_pct,
 
@@ -124,12 +133,12 @@ final as (
         )                                                                    as coeff_accuracy
 
     from assets a
+    join held h on a.asset_id = h.asset_id
     left join prices p on a.item_id = p.item_id
     left join exchange_rate r on 1 = 1
     left join coeffs c on a.category = c.category
     left join skinport_prices s on a.item_id = s.item_id
     left join volume v on a.item_id = v.item_id
-    where a.item_id not in (select item_id from sold_items)
 )
 
 select * from final

@@ -73,9 +73,19 @@ models:
         description: "Liquidity indicator: LOW (<5 sales/7d), MEDIUM (5-50 sales/7d), HIGH (>50 sales/7d). Low volume = hard to sell at market price"
 
   - name: fct_realized_pnl
-    description: "Realized PnL on closed positions — fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 8%)"
+    description: "Realized PnL on closed positions (FIFO). Grain: one row per (sale × buy lot) allocation. Fee derived from sell_channel (Steam 15%, CSFloat 2%, Skinport 8%)."
     columns:
+      - name: realized_sk
+        description: "Surrogate key over (sell_id, buy_asset_id)"
+        tests:
+          - unique
+          - not_null
       - name: buy_asset_id
+        description: "asset_id of the buy lot this allocation draws from (FIFO)"
+        tests:
+          - not_null
+      - name: sell_id
+        description: "asset_id of the originating sale event"
         tests:
           - not_null
       - name: item_id
@@ -84,11 +94,19 @@ models:
           - relationships:
               to: ref('dim_assets')
               field: item_id
+      - name: units_sold_from_lot
+        description: "Units of this sale drawn from this specific buy lot (FIFO)"
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              inclusive: true
       - name: buy_price_pln
+        description: "Per-unit purchase price of the allocated lot"
         tests:
           - not_null
       - name: gross_sell_price_pln
-        description: "Sell price before platform fee deduction"
+        description: "Per-unit sell price before platform fee deduction"
         tests:
           - not_null
       - name: fee_pct
@@ -96,18 +114,22 @@ models:
         tests:
           - not_null
       - name: fee_amount_pln
-        description: "Fee in PLN (gross_sell_price_pln × fee_pct / 100)"
+        description: "Per-unit fee in PLN (gross_sell_price_pln × fee_pct / 100)"
       - name: net_sell_price_pln
-        description: "Sell price after platform fee (gross × (1 - fee_pct/100))"
+        description: "Per-unit sell price after platform fee (gross × (1 - fee_pct/100))"
         tests:
           - not_null
       - name: realized_pnl_pln
-        description: "Net realized profit (net_sell_price_pln - buy_price_pln)"
+        description: "Total realized profit for the allocation ((net_sell_price_pln - buy_price_pln) × units_sold_from_lot)"
         tests:
           - not_null
       - name: holding_period_days
+        description: "Days between buy_date and sell_date for this allocation"
         tests:
           - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
       - name: sell_channel
         description: "Platform where item was sold (Steam / CSFloat / Skinport)"
         tests:
