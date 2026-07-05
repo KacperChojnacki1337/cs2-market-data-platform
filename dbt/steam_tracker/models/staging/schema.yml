@@ -17,6 +17,13 @@ models:
           - dbt_utils.accepted_range:
               min_value: 1
               inclusive: true
+      - name: buy_currency
+        description: "Purchase currency — the PnL math assumes PLN (no FX conversion on buy_price)"
+        tests:
+          - accepted_values:
+              values: ['PLN']
+              config:
+                severity: warn
 
   - name: stg_sales
     description: "Cleaned sell events from sales_history"
@@ -38,3 +45,10 @@ models:
           - dbt_utils.accepted_range:
               min_value: 1
               inclusive: true
+      - name: sell_currency
+        description: "Sale currency — realized PnL assumes PLN (no FX conversion on sell_price)"
+        tests:
+          - accepted_values:
+              values: ['PLN']
+              config:
+                severity: warn

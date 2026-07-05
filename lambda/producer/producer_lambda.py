@@ -115,7 +115,22 @@ def _get_bq_client():
 
 
 def _scan_dynamodb():
-    return inventory_table.scan().get('Items', [])
+    """Full inventory scan with pagination.
+
+    A single DynamoDB scan() returns at most 1 MB; without following
+    LastEvaluatedKey, items beyond that boundary are silently dropped once the
+    inventory grows. Paginate to always return the complete table.
+    """
+    items = []
+    scan_kwargs = {}
+    while True:
+        response = inventory_table.scan(**scan_kwargs)
+        items.extend(response.get('Items', []))
+        last_key = response.get('LastEvaluatedKey')
+        if not last_key:
+            break
+        scan_kwargs['ExclusiveStartKey'] = last_key
+    return items
 
 
 def _compute_net_quantity(items):

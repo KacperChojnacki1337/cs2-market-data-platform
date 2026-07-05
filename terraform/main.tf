@@ -646,7 +646,7 @@ resource "google_monitoring_notification_channel" "email" {
   }
 }
 
-# --- GCP: Monthly budget $5 with alerts at 25%, 50%, 100% ---
+# --- GCP: Monthly budget 25 PLN with alerts at 25%, 50%, 100% ---
 resource "google_billing_budget" "monthly_budget" {
   billing_account = var.billing_account_id
   display_name    = "Steam Tracker Monthly Budget"
