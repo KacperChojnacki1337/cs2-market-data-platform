@@ -112,35 +112,42 @@ final as (
             else 'HIGH'
         end                                                                 as liquidity_risk,
 
-        -- Skinport prices (alternative market, gross — before Skinport's sale fee)
-        s.skinport_price_pln,
+        -- Skinport prices (alternative market, gross — before Skinport's sale fee).
+        -- Falls back to the coefficient estimate (Steam price × rate × real_cash_coeff)
+        -- in place when the item is not listed on Skinport (~2% of holdings), so the
+        -- Skinport valuation has no gaps. For fallback rows coeff_accuracy is 1.0 by
+        -- construction (estimate compared to itself).
+        coalesce(
+            s.skinport_price_pln,
+            round(p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65), 2)
+        )                                                                    as skinport_price_pln,
         round(
-            (s.skinport_price_pln - a.buy_price) * h.remaining_qty, 2
+            (coalesce(s.skinport_price_pln, p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65)) - a.buy_price) * h.remaining_qty, 2
         )                                                                    as skinport_pnl_pln,
         round(
             safe_divide(
-                (s.skinport_price_pln - a.buy_price) * h.remaining_qty,
+                (coalesce(s.skinport_price_pln, p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65)) - a.buy_price) * h.remaining_qty,
                 a.buy_price * h.remaining_qty
             ) * 100
         , 2)                                                                as skinport_pnl_pct,
 
         -- Skinport net value (gross price minus 8% standard Skinport sale fee)
-        round(s.skinport_price_pln * h.remaining_qty * 0.92, 2)             as net_value_skinport_pln,
+        round(coalesce(s.skinport_price_pln, p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65)) * h.remaining_qty * 0.92, 2) as net_value_skinport_pln,
         round(
-            (s.skinport_price_pln * 0.92 - a.buy_price) * h.remaining_qty, 2
+            (coalesce(s.skinport_price_pln, p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65)) * 0.92 - a.buy_price) * h.remaining_qty, 2
         )                                                                    as net_skinport_pnl_pln,
         round(
             safe_divide(
-                (s.skinport_price_pln * 0.92 - a.buy_price) * h.remaining_qty,
+                (coalesce(s.skinport_price_pln, p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65)) * 0.92 - a.buy_price) * h.remaining_qty,
                 a.buy_price * h.remaining_qty
             ) * 100
         , 2)                                                                as net_skinport_pnl_pct,
 
-        -- Accuracy indicator: how close real_cash_coeff is to actual Skinport price
+        -- Accuracy indicator: coeff estimate vs Skinport price (= 1.0 for fallback rows)
         round(
             safe_divide(
                 p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65),
-                s.skinport_price_pln
+                coalesce(s.skinport_price_pln, p.price_usd * r.rate * coalesce(c.real_cash_coeff, 0.65))
             ), 4
         )                                                                    as coeff_accuracy
 
