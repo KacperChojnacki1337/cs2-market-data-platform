@@ -193,11 +193,12 @@ aws dynamodb put-item --table-name steam_inventory_metadata --item '{
 - `fct_portfolio` — unrealized PnL per active position (one row per held buy lot; `quantity` = FIFO `remaining_qty`, unsold units only). Key columns:
   - Steam: `current_value_pln`, `pnl_total_pln`, `pnl_pct`, `net_value_steam_pln` (×0.85)
   - CSFloat: `real_cash_value_pln` (×`real_cash_coeff`), `real_cash_pnl_pln/pct`
-  - Skinport: `skinport_price_pln` (gross), `net_value_skinport_pln` (×0.92), `net_skinport_pnl_pln/pct`
+  - Skinport: `skinport_price_pln` (gross; falls back in place to coeff estimate `Steam×rate×coeff` when the item is unlisted, so no gaps), `net_value_skinport_pln` (×0.92), `net_skinport_pnl_pln/pct`
   - Liquidity: `volume_7d`, `liquidity_risk` (LOW/MEDIUM/HIGH), `coeff_accuracy`
   - real_cash_coeff per category: Knife=0.83, Gloves=0.80, Skin/Case=0.74, Agent=0.60, Sticker=0.49, Other=0.65
 - `fct_portfolio_history` — daily snapshots (full-rebuild table, partitioned by `snapshot_date`); FIFO time-aware holdings — a lot's held units per day = units bought minus units sold as-of that date
 - `fct_realized_pnl` — closed positions, grain = (sale × buy lot) via FIFO; fee from `sell_channel` (Steam=15%, CSFloat=2%, Skinport=8%, Unknown=0%); `units_sold_from_lot`, `net_sell_price_pln`, `realized_pnl_pln/pct`, `holding_period_days`
+- `worth_to_sell` — held positions ready to cash out: filters net Skinport profit ≥25% AND ≥50 PLN (real cash after fees; free drops with buy_price=0 qualify on materiality alone, `net_profit_pct`=NULL). `sell_tier` = liquidity split (STRONG SELL / TAKE PROFIT illiquid); liquidity + momentum (`pct_below_peak_30d`, `past_peak`) are flags, not filters
 
 ### Steam Data Quality
 
