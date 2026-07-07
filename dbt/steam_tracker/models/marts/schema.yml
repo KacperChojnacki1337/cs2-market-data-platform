@@ -183,3 +183,29 @@ models:
           - not_null
           - accepted_values:
               values: ['STRONG SELL', 'TAKE PROFIT (illiquid)']
+
+  - name: rpt_portfolio_summary
+    description: "Single-row portfolio KPI + ratio metrics layer for Looker Studio. Owns headline valuations, cash return, concentration and liquidity shares so every consumer reads identical numbers. Dev CI runs against curated fixtures (scripts/seed_dev.py), so these tests are meaningful."
+    columns:
+      - name: cost_pln
+        tests: [not_null]
+      - name: skinport_net_pln
+        description: "Realisable cash if all held units sold on Skinport today (after 8% fee)"
+        tests: [not_null]
+      - name: csfloat_pln
+        description: "Realisable cash on CSFloat (per-category coefficient)"
+        tests: [not_null]
+      - name: steam_net_pln
+        description: "Steam value after 15% fee — Steam-wallet only, not withdrawable cash"
+        tests: [not_null]
+      - name: cash_return_pct
+        description: "Unrealized return on cost, valued at Skinport net"
+        tests: [not_null]
+      - name: positions
+        tests: [not_null]
+      - name: top_position_share_pct
+        description: "Largest single position as % of total market value (concentration risk)"
+        tests: [not_null]
+      - name: low_liquidity_share_pct
+        description: "% of market value in LOW-liquidity positions (hard to sell quickly)"
+        tests: [not_null]
