@@ -152,3 +152,34 @@ models:
         description: "Total real cash portfolio value if all active positions sold on CSFloat today"
         tests:
           - not_null
+
+  - name: worth_to_sell
+    description: "Held positions worth cashing out: net Skinport profit >= 25% AND >= 50 PLN. Liquidity and momentum are flags, not filters. Value in realisable cash (after fees), not Steam gross."
+    columns:
+      - name: asset_sk
+        tests:
+          - unique
+          - not_null
+      - name: item_id
+        tests:
+          - not_null
+      - name: net_profit_pln
+        description: "Net realised profit if sold on Skinport today (after 8% fee)"
+        tests:
+          - not_null
+      - name: net_profit_pct
+        description: "Net Skinport profit % — filter threshold >= 25. NULL for free drops (buy_price = 0, infinite ROI), which qualify on materiality alone."
+      - name: liquidity_risk
+        description: "LOW/MEDIUM/HIGH — flag only; LOW winners still surface as TAKE PROFIT (illiquid)"
+      - name: pct_below_peak_30d
+        description: "How far current price sits below its 30-day peak (momentum; weak until history grows)"
+      - name: past_peak
+        description: "TRUE if current price <= 90% of the 30-day peak"
+        tests:
+          - not_null
+      - name: sell_tier
+        description: "Liquidity split — STRONG SELL (liquid) / TAKE PROFIT (illiquid). List is pre-filtered to profitable positions, so both mean 'sell'."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['STRONG SELL', 'TAKE PROFIT (illiquid)']
