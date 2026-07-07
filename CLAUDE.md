@@ -63,7 +63,7 @@ Looker Studio (dashboard over steam_marts — issue #63, planned)
 | [#82](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/82) | Decouple price_flagged from zero volume | Done |
 | [#83](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/83) | Skinport fee 5%→8% + net Skinport columns | Done |
 | [#70](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/70) | Airflow orchestrator (Phase 1: DAG skeleton done; Phase 2: Oracle VM deploy; Phase 3: cutover) | In Progress |
-| [#63](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/63) | Looker Studio dashboard | Planned |
+| [#63](https://github.com/KacperChojnacki1337/cs2-market-data-platform/issues/63) | Looker Studio dashboard | In Progress (build guide: `docs/looker_studio_guide.md`) |
 
 ## Project Structure
 
@@ -107,6 +107,7 @@ terraform apply tfplan
 ### dbt
 
 ```bash
+python scripts/seed_dev.py --key /path/to/gcp-key.json   # one-time: fill steam_raw_dev with curated fixtures
 cd dbt/steam_tracker
 dbt deps
 dbt run --target dev          # local: writes to *_dev datasets
@@ -199,6 +200,7 @@ aws dynamodb put-item --table-name steam_inventory_metadata --item '{
 - `fct_portfolio_history` — daily snapshots (full-rebuild table, partitioned by `snapshot_date`); FIFO time-aware holdings — a lot's held units per day = units bought minus units sold as-of that date
 - `fct_realized_pnl` — closed positions, grain = (sale × buy lot) via FIFO; fee from `sell_channel` (Steam=15%, CSFloat=2%, Skinport=8%, Unknown=0%); `units_sold_from_lot`, `net_sell_price_pln`, `realized_pnl_pln/pct`, `holding_period_days`
 - `worth_to_sell` — held positions ready to cash out: filters net Skinport profit ≥25% AND ≥50 PLN (real cash after fees; free drops with buy_price=0 qualify on materiality alone, `net_profit_pct`=NULL). `sell_tier` = liquidity split (STRONG SELL / TAKE PROFIT illiquid); liquidity + momentum (`pct_below_peak_30d`, `past_peak`) are flags, not filters
+- `rpt_portfolio_summary` — single-row KPI + ratio metrics layer for Looker Studio (valuations, cash return, concentration %, low-liquidity %). Metric logic lives in dbt, not BI calculated fields
 
 ### Steam Data Quality
 

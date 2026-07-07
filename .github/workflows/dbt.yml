@@ -84,6 +84,9 @@ jobs:
                 timeout_seconds: 300
           EOF
 
+      - name: Seed dev fixtures
+        run: python scripts/seed_dev.py --key /tmp/gcp_key.json
+
       - name: dbt deps
         working-directory: dbt/steam_tracker
         run: dbt deps --profiles-dir ~/.dbt
