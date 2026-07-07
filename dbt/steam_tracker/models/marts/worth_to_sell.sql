@@ -66,7 +66,10 @@ final as (
 
     from portfolio p
     left join price_momentum pm on p.item_id = pm.item_id
-    where p.net_skinport_pnl_pct >= {{ min_profit_pct }}
+    -- Free drops (buy_price = 0) have infinite ROI, so net_profit_pct is NULL and
+    -- would fail `>= 25`. Treat zero cost as automatically passing the % test —
+    -- a free drop worth >= 50 PLN is the purest sell candidate there is.
+    where (p.net_skinport_pnl_pct >= {{ min_profit_pct }} or p.buy_price_pln = 0)
       and p.net_skinport_pnl_pln >= {{ min_profit_pln }}
 )
 

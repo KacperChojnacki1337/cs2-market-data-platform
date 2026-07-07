@@ -168,9 +168,7 @@ models:
         tests:
           - not_null
       - name: net_profit_pct
-        description: "Net Skinport profit % — filter threshold >= 25"
-        tests:
-          - not_null
+        description: "Net Skinport profit % — filter threshold >= 25. NULL for free drops (buy_price = 0, infinite ROI), which qualify on materiality alone."
       - name: liquidity_risk
         description: "LOW/MEDIUM/HIGH — flag only; LOW winners still surface as TAKE PROFIT (illiquid)"
       - name: pct_below_peak_30d
