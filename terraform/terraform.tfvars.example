@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and fill in your values (terraform.tfvars is gitignored).
+# Only the five variables without a default are required.
+
+# --- Required ---------------------------------------------------------------
+gcp_project_id       = "your-gcp-project-id"            # BigQuery project
+gcp_credentials_file = "/path/to/gcp-service-account.json"  # local key path (never commit)
+alert_email          = "you@example.com"                # CloudWatch + GCP budget alerts
+billing_account_id   = "XXXXXX-XXXXXX-XXXXXX"           # GCP billing account (for budget)
+gcp_project_number   = "123456789012"                   # GCP Console > Home > Project info
+
+# --- Optional (defaults shown) ----------------------------------------------
+# aws_region        = "eu-central-1"
+# gcp_region        = "europe-west3"
+# price_batch_count = 20   # EventBridge price batches (5 items each); raise when inventory > count * 5
