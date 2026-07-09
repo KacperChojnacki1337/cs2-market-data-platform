@@ -21,6 +21,17 @@
 
 with p as (
     select * from `steam-tracker-portfolio`.`steam_marts`.`fct_portfolio`
+),
+
+-- Concentration must be measured per item, not per lot: an item bought across
+-- several lots (each its own row in fct_portfolio) would otherwise report the
+-- value of its single largest lot, understating true concentration risk (and,
+-- for a multi-lot item that isn't also the single biggest lot elsewhere,
+-- naming the wrong item as "top position").
+per_item as (
+    select item_id, sum(current_value_pln) as item_value_pln
+    from p
+    group by item_id
 )
 
 select
@@ -45,9 +56,9 @@ select
     count(*)                                                    as positions,
     sum(quantity)                                               as units,
 
-    -- Concentration: largest single position as a share of market value
-    round(max(current_value_pln), 2)                            as top_position_value_pln,
-    round(safe_divide(max(current_value_pln), sum(current_value_pln)) * 100, 1) as top_position_share_pct,
+    -- Concentration: largest single item (summed across its lots) as a share of market value
+    round((select max(item_value_pln) from per_item), 2)         as top_position_value_pln,
+    round(safe_divide((select max(item_value_pln) from per_item), sum(current_value_pln)) * 100, 1) as top_position_share_pct,
 
     -- Liquidity: share of market value in LOW-liquidity positions
     round(
