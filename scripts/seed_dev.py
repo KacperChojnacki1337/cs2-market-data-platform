@@ -44,9 +44,13 @@ ASSETS = [
          buy_price=100.0, buy_currency="PLN", quantity=1, category="Skin", purchase_channel="CSFloat"),
     dict(asset_id="dev-ak-lot2", item_id="AK-47 | Redline (Field-Tested)", buy_date="2026-06-01",
          buy_price=120.0, buy_currency="PLN", quantity=1, category="Skin", purchase_channel="CSFloat"),
-    # Karambit: high value, illiquid winner -> concentration + TAKE PROFIT (illiquid)
-    dict(asset_id="dev-karambit", item_id="Karambit | Doppler (Factory New)", buy_date="2026-04-10",
+    # Karambit: TWO held lots (both survive FIFO, neither sold) -> concentration
+    # test. rpt_portfolio_summary.top_position_share_pct must sum both lots for
+    # this item, not report the value of a single lot (see #N2 in the audit).
+    dict(asset_id="dev-karambit-1", item_id="Karambit | Doppler (Factory New)", buy_date="2026-04-10",
          buy_price=1500.0, buy_currency="PLN", quantity=1, category="Knife", purchase_channel="Steam"),
+    dict(asset_id="dev-karambit-2", item_id="Karambit | Doppler (Factory New)", buy_date="2026-05-05",
+         buy_price=1600.0, buy_currency="PLN", quantity=1, category="Knife", purchase_channel="Steam"),
     # Gloves
     dict(asset_id="dev-gloves", item_id="Sport Gloves | Vice (Field-Tested)", buy_date="2026-03-15",
          buy_price=800.0, buy_currency="PLN", quantity=1, category="Gloves", purchase_channel="Steam"),
@@ -140,10 +144,19 @@ def main():
     client = bigquery.Client(project=PROJECT, credentials=creds)
 
     tables = build_all()
-    job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
 
     for table, rows in tables.items():
         ref = f"{PROJECT}.{DATASET}.{table}"
+        # Load against the destination table's existing schema explicitly, rather
+        # than relying on autodetect-from-JSON behaviour: these tables already
+        # have a Terraform-defined schema (assets_history.quantity is INTEGER,
+        # not the FLOAT autodetect might infer from a JSON number, for example),
+        # and the fixtures must match it exactly.
+        schema = client.get_table(ref).schema
+        job_config = bigquery.LoadJobConfig(
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            schema=schema,
+        )
         job = client.load_table_from_json(rows, ref, job_config=job_config)
         job.result()  # wait
         print(f"  loaded {len(rows):>3} rows -> {ref}")
