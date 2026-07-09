@@ -44,12 +44,18 @@ def fetch_skinport_prices(owned_item_ids, retries=5, backoff=2):
                     # Index by market_hash_name for O(1) lookup
                     skinport_items = {item.get("market_hash_name"): item for item in data}
 
-                    # Match owned items to Skinport listings
+                    # Match owned items to Skinport listings.
+                    # Prefer median_price — the actual middle of current listings — over
+                    # suggested_price, which is Skinport's static reference recommendation
+                    # and doesn't move with real market activity. median_price is null when
+                    # an item has no current listings (quantity=0), so fall back to
+                    # suggested_price in that case.
                     for item_id in owned_item_ids:
                         if item_id in skinport_items:
                             skinport_item = skinport_items[item_id]
                             try:
-                                price_pln = float(skinport_item.get("suggested_price", 0))
+                                median = skinport_item.get("median_price")
+                                price_pln = float(median) if median else float(skinport_item.get("suggested_price", 0))
                                 if price_pln > 0:
                                     matched_prices[item_id] = price_pln
                             except (ValueError, TypeError):
@@ -100,10 +106,12 @@ def lambda_handler(event, context):
         print(f"OWNED_ITEMS_LOADED | count={len(owned_item_ids)}")
     except Exception as e:
         print(f"ERROR_LOADING_OWNED_ITEMS | {e}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({"status": "error", "reason": f"Could not load owned items: {e}"})
-        }
+        # Re-raise so Lambda records this invocation as failed. A caught exception
+        # returning statusCode 500 in the body still counts as a *successful*
+        # invocation to CloudWatch — the skinport_errors alarm (AWS/Lambda Errors
+        # metric) would never fire, and the failure would only ever show up as
+        # silently stale skinport_price_pln in fct_portfolio.
+        raise
 
     if not owned_item_ids:
         print(f"INVOCATION_END | date={run_date} | status=no_owned_items")
@@ -114,10 +122,9 @@ def lambda_handler(event, context):
 
     if skinport_prices is None:
         print(f"INVOCATION_END | date={run_date} | status=skinport_fetch_failed")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({"status": "error", "reason": "Skinport fetch failed after all retries"})
-        }
+        # Same reasoning as above: raise so this counts as a failed Lambda
+        # invocation and the CloudWatch alarm actually fires.
+        raise RuntimeError("Skinport fetch failed after all retries")
 
     # 3. Build rows for BigQuery
     skinport_rows = []
