@@ -10,9 +10,13 @@ on:
     branches:
       - main
       - develop
-  schedule:
-    # Runs daily at 08:00 UTC — 1 hour after producer Lambda collects data
-    - cron: '0 8 * * *'
+  # schedule trigger PAUSED 2026-07-14 — Steam Market blocking globally (see
+  # terraform/main.tf EventBridge rules, disabled same day). The daily prod run
+  # would just fail the freshness check every day (0 price rows) and add noise
+  # to the Actions history. Uncomment once the EventBridge rules are re-enabled.
+  # schedule:
+  #   # Runs daily at 08:00 UTC — 1 hour after producer Lambda collects data
+  #   - cron: '0 8 * * *'
   workflow_dispatch:
 
 jobs:
