@@ -528,11 +528,18 @@ resource "aws_lambda_function" "skinport_producer" {
 # To support more items: increase price_batch_count in terraform.tfvars (5 items per batch).
 
 # --- First run: 07:00 UTC ---
+# PAUSED 2026-07-14: Steam Market's priceoverview endpoint is rate-limiting/blocking
+# globally (confirmed from multiple IPs, not an AWS-IP-specific ban) — every fetch
+# fails, and the 07:30 retry was hitting the hard 600s Lambda timeout trying to catch
+# up. Rules disabled here (not destroyed) so zero cost accrues and zero data is lost;
+# flip state back to "ENABLED" (or remove the block) once Steam recovers, then
+# `terraform apply`.
 resource "aws_cloudwatch_event_rule" "producer_batch" {
   count               = var.price_batch_count
   name                = "steam-producer-price-batch-${count.index}"
   description         = "Price batch ${count.index} — items ${count.index * 5}-${count.index * 5 + 4} alphabetically"
   schedule_expression = "cron(0 7 * * ? *)"
+  state               = "DISABLED"
 }
 
 resource "aws_cloudwatch_event_target" "producer_batch" {
@@ -561,6 +568,7 @@ resource "aws_cloudwatch_event_rule" "producer_retry_missing" {
   name                = "steam-producer-retry-missing"
   description         = "Smart retry at 07:30 UTC — fetches only items without a valid price today"
   schedule_expression = "cron(30 7 * * ? *)"
+  state               = "DISABLED" # PAUSED 2026-07-14 — see producer_batch comment above
 }
 
 resource "aws_cloudwatch_event_target" "producer_retry_missing" {
@@ -585,6 +593,7 @@ resource "aws_cloudwatch_event_rule" "skinport_daily" {
   name                = "skinport-producer-daily"
   description         = "Skinport price fetch at 07:00 UTC — TEMPORARY, replaced by Airflow (#70)"
   schedule_expression = "cron(0 7 * * ? *)"
+  state               = "DISABLED" # PAUSED 2026-07-14 — see producer_batch comment above (Steam-side, not Skinport-specific, but paused together since it feeds dim_assets-dependent pricing)
 }
 
 resource "aws_cloudwatch_event_target" "skinport_daily" {
